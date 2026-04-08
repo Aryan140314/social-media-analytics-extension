@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Social Post Monitor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 340px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      color: #1c1e21;
+      background: #f0f2f5;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #1877f2 0%, #0d65d9 100%);
+      color: white;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-icon { font-size: 24px; }
+    .header-title { font-size: 15px; font-weight: 700; }
+    .header-sub { font-size: 11px; opacity: 0.8; margin-top: 2px; }
+
+    .section { background: white; margin: 8px; border-radius: 12px; overflow: hidden; }
+    .section-title {
+      padding: 10px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #65676b;
+      border-bottom: 1px solid #f0f2f5;
+      background: #fafafa;
+    }
+
+    .empty-state {
+      padding: 20px;
+      text-align: center;
+      color: #65676b;
+      font-size: 12px;
+    }
+    .empty-state .icon { font-size: 28px; margin-bottom: 8px; }
+
+    .stat-row {
+      padding: 10px 14px;
+      border-bottom: 1px solid #f0f2f5;
+    }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-url {
+      font-weight: 600;
+      font-size: 11px;
+      color: #1877f2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 280px;
+      margin-bottom: 6px;
+    }
+    .stat-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+    .badge {
+      background: #f0f2f5;
+      border-radius: 20px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: #1c1e21;
+      font-weight: 500;
+    }
+    .badge-platform {
+      background: #e7f0fd;
+      color: #1877f2;
+    }
+    .stat-time {
+      font-size: 10px;
+      color: #999;
+      margin-top: 4px;
+    }
+
+    .btn-clear {
+      display: block;
+      width: calc(100% - 16px);
+      margin: 4px 8px 8px;
+      padding: 9px;
+      background: #fdecea;
+      color: #c62828;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-clear:hover { background: #f9d5d4; }
+
+    .how-to {
+      padding: 12px 14px;
+      font-size: 12px;
+      color: #444;
+      line-height: 1.7;
+    }
+    .how-to li { margin-left: 16px; margin-bottom: 2px; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-icon">📊</div>
+    <div>
+      <div class="header-title">Social Post Monitor</div>
+      <div class="header-sub">Facebook & Instagram</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">📌 Recently Monitored Posts</div>
+    <div id="stats-container">
+      <div class="empty-state">
+        <div class="icon">🔍</div>
+        <div>No posts monitored yet.<br/>Open a post on Facebook or Instagram.</div>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn-clear" id="clear-btn">🗑️ Clear History</button>
+
+  <div class="section">
+    <div class="section-title">💡 How to Use</div>
+    <div class="how-to">
+      <ul>
+        <li>Open any post on Facebook or Instagram</li>
+        <li>Click the <strong>📊 button</strong> in the bottom-right corner</li>
+        <li>Stats load automatically — hit 🔄 to refresh</li>
+        <li>Click <strong>⬇️ Download</strong> to save the post media</li>
+        <li>Click <strong>↗️ Quick Share</strong> to share the post</li>
+        <li>Reach data only appears on <em>your own</em> posts</li>
+      </ul>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

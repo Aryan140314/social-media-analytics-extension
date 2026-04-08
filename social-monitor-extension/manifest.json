@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Social Post Monitor",
+  "version": "1.0.0",
+  "description": "Monitor likes, reach, download posts and quick-share on Facebook & Instagram",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://www.instagram.com/*",
+    "https://*.cdninstagram.com/*",
+    "https://*.fbcdn.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://www.instagram.com/*"
+      ],
+      "js": ["content/injector.js"],
+      "css": ["content/panel.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Social Post Monitor"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["content/*", "icons/*"],
+      "matches": ["https://www.facebook.com/*", "https://www.instagram.com/*"]
+    }
+  ]
+}
