@@ -1,69 +1,114 @@
-# 📊 Social Post Monitor — Chrome Extension (v1)
+# Social Media Analytics Extension (v2)
 
-Monitor Facebook & Instagram posts: track likes, comments, shares, reach, download media, and quick-share posts.
+## 📌 Overview
 
----
+Version 2 of the Social Media Analytics Extension introduces a sidebar-based UI, improved DOM extraction, and media handling features for Instagram and Facebook.
 
-## Features
-
-| Feature | Facebook | Instagram |
-|---------|----------|-----------|
-| ❤️ Likes / Reactions | ✅ | ✅ |
-| 💬 Comments Count | ✅ | ✅ |
-| 🔁 Shares Count | ✅ | ⚠️ Not shown by IG |
-| 👁️ Reach / Views | ✅ Own posts only | ✅ Reels/Videos |
-| ⬇️ Download Media | ✅ Images & Videos | ✅ Images & Videos |
-| ↗️ Quick Share | ✅ | ✅ |
+This version enhances usability and provides better interaction with extracted data.
 
 ---
 
-## Installation (Chrome / Edge)
+## 🚀 Features
 
-1. Open Chrome and go to `chrome://extensions/`
-2. Enable **Developer Mode** (toggle in top-right)
-3. Click **"Load unpacked"**
-4. Select this folder (`social-monitor-extension/`)
-5. The extension is now installed!
-
----
-
-## How to Use
-
-1. Go to **Facebook** or **Instagram**
-2. Open any post page
-3. Click the **📊 button** in the bottom-right corner of the page
-4. The panel shows stats automatically
-5. Use the buttons:
-   - 🔄 **Refresh Stats** — re-scan the page
-   - ⬇️ **Download Post** — download image/video
-   - ↗️ **Quick Share** — open the native share dialog
-
-### Popup (Extension Icon)
-Click the extension icon in the toolbar to see your **history** of monitored posts.
+| Feature            | Description                                        |
+| ------------------ | -------------------------------------------------- |
+| Sidebar UI         | Interactive panel injected into social media pages |
+| Post Analytics     | Extract likes, comments, and basic engagement data |
+| Media Extraction   | Detect and collect image/video URLs                |
+| Bulk Download      | Download multiple media files from posts           |
+| Notifications      | Show alerts for actions like downloads             |
+| Improved Selectors | More reliable DOM scraping logic                   |
 
 ---
 
-## Limitations
+## 🛠 Installation (Chrome / Edge)
 
-- **Reach data** is only visible on **your own posts** (via Facebook/Instagram Insights)
-- **"Who shared to whom"** is private — neither Facebook nor Instagram expose this to anyone
-- Facebook/Instagram update their DOM frequently — selectors may need updates over time
-- Downloading media from other users' posts should only be done for personal, non-commercial use
+### Step 1
+
+Download or clone this repository
+
+### Step 2
+
+Open browser and go to:
+
+```id="a1k29x"
+chrome://extensions/
+```
+
+### Step 3
+
+Enable:
+
+```text id="z2mxo1"
+Developer Mode
+```
+
+### Step 4
+
+Click:
+
+```text id="l9q1bc"
+Load unpacked
+```
+
+### Step 5
+
+Select the project folder
 
 ---
 
-## Files
+## ▶️ How to Use
+
+1. Open Instagram or Facebook
+2. Navigate to any post
+3. Click on the extension icon
+4. Sidebar will appear
+5. View:
+
+   * Likes
+   * Comments
+   * Media
+6. Use download button to save media
+
+---
+
+## ⚠️ Limitations
+
+* Relies on DOM structure (can break if UI changes)
+* Not all posts expose full data
+* Comment count may be approximate
+* No API-based scraping yet
+
+---
+
+## 📂 Project Structure
 
 ```
-social-monitor-extension/
-├── manifest.json         — Extension config (Manifest V3)
-├── background.js         — Service worker (handles downloads & storage)
-├── content/
-│   ├── injector.js       — Injected into FB/IG pages (scraper + panel)
-│   └── panel.css         — Styles for the floating panel
-├── popup/
-│   ├── popup.html        — Extension popup UI
-│   └── popup.js          — Popup logic
-└── icons/
-    └── icon.svg          — Extension icon
+manifest.json
+background.js
+content/
+  injector.js
+  sidebar.css
+popup/
+  popup.html
+  popup.js
+icons/
 ```
+
+---
+
+## 📈 Improvements Over v1
+
+* Added UI (sidebar)
+* Improved extraction logic
+* Added media handling
+* Better user interaction
+
+---
+
+## 💡 Future Plans
+
+* Modular architecture (v3)
+* API-based scraping (v4)
+* Real-time analytics
+* Data visualization

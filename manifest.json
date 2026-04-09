@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Social Post Monitor",
-  "version": "1.0.0",
-  "description": "Monitor likes, reach, download posts and quick-share on Facebook & Instagram",
+  "name": "Social Post Monitor Pro",
+  "version": "2.0.0",
+  "description": "Professional analytics sidebar for Facebook & Instagram \u2014 stats, charts, comments, profile, bulk download",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "downloads"
+    "downloads",
+    "notifications"
   ],
   "host_permissions": [
     "https://www.facebook.com/*",
@@ -24,19 +25,40 @@
         "https://www.facebook.com/*",
         "https://www.instagram.com/*"
       ],
-      "js": ["content/injector.js"],
-      "css": ["content/panel.css"],
+      "js": [
+        "content/injector.js"
+      ],
+      "css": [
+        "content/sidebar.css"
+      ],
       "run_at": "document_idle"
     }
   ],
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Social Post Monitor"
+    "default_title": "Social Post Monitor Pro",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "web_accessible_resources": [
     {
-      "resources": ["content/*", "icons/*"],
-      "matches": ["https://www.facebook.com/*", "https://www.instagram.com/*"]
+      "resources": [
+        "content/*",
+        "icons/*",
+        "dashboard/*"
+      ],
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://www.instagram.com/*"
+      ]
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }

@@ -1,59 +1,52 @@
-// Popup script — loads saved stats from storage and renders them
-
-function timeAgo(ts) {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+function ago(t) {
+  const d=Date.now()-t, m=Math.floor(d/60000);
+  if(m<1) return 'just now'; if(m<60) return m+'m ago';
+  const h=Math.floor(m/60); if(h<24) return h+'h ago';
+  return Math.floor(h/24)+'d ago';
+}
+function fmt(n) {
+  if(n==null) return null;
+  if(n>=1e6) return (n/1e6).toFixed(1)+'M';
+  if(n>=1e3) return (n/1e3).toFixed(1)+'K';
+  return n.toLocaleString();
 }
 
-function renderStats(stats) {
-  const container = document.getElementById("stats-container");
+chrome.storage.local.get(['spm_history'], r => {
+  const history = r.spm_history || [];
+  const el = document.getElementById('recent');
 
-  if (!stats || stats.length === 0) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <div class="icon">🔍</div>
-        <div>No posts monitored yet.<br/>Open a post on Facebook or Instagram.</div>
-      </div>`;
+  if (!history.length) {
+    el.innerHTML = `<div class="no-data"><div class="icon">🔍</div>No posts monitored yet.<br/>Open a post and click 📊</div>`;
     return;
   }
 
-  // Show most recent first
-  const sorted = [...stats].reverse();
-  container.innerHTML = sorted.map(s => {
-    const platform = s.platform || "unknown";
-    const url = s.url ? new URL(s.url).pathname.substring(0, 40) + "…" : "Unknown URL";
+  // Group by URL, keep latest snapshot
+  const byUrl = {};
+  history.forEach(h => {
+    if (!byUrl[h.url] || h.ts > byUrl[h.url].ts) byUrl[h.url] = h;
+  });
+
+  const rows = Object.values(byUrl).sort((a,b)=>b.ts-a.ts).slice(0,5);
+  el.innerHTML = rows.map(h => {
+    const urlPath = (() => { try { return new URL(h.url).pathname.slice(0,40)+'…'; } catch(e) { return (h.url||'').slice(0,40); } })();
     const badges = [
-      s.likes    ? `❤️ ${s.likes}`    : null,
-      s.comments ? `💬 ${s.comments}` : null,
-      s.shares   ? `🔁 ${s.shares}`   : null,
-      s.reach    ? `👁️ ${s.reach}`    : null,
+      h.likes    != null ? `❤️ ${fmt(h.likes)}`    : null,
+      h.comments != null ? `💬 ${fmt(h.comments)}` : null,
+      h.shares   != null ? `🔁 ${fmt(h.shares)}`   : null,
     ].filter(Boolean);
-
-    return `
-      <div class="stat-row">
-        <div class="stat-url" title="${s.url}">${url}</div>
-        <div class="stat-badges">
-          <span class="badge badge-platform">${platform}</span>
-          ${badges.map(b => `<span class="badge">${b}</span>`).join("")}
-          ${badges.length === 0 ? '<span class="badge">No stats found</span>' : ""}
-        </div>
-        <div class="stat-time">Updated ${timeAgo(s.updatedAt)}</div>
+    return `<div class="stat-row" style="flex-direction:column;align-items:flex-start">
+      <div style="display:flex;align-items:center;gap:6px;width:100%">
+        <span class="stat-platform">${(h.platform||'?').toUpperCase()}</span>
+        <span class="stat-url" title="${h.url}">${urlPath}</span>
       </div>
-    `;
-  }).join("");
-}
-
-// Load and render
-chrome.runtime.sendMessage({ type: "GET_STATS" }, (res) => {
-  renderStats(res?.stats || []);
+      <div class="badges">${badges.map(b=>`<span class="badge">${b}</span>`).join('')||'<span class="badge">No stats</span>'}</div>
+      <div class="stat-time">Updated ${ago(h.ts)}</div>
+    </div>`;
+  }).join('');
 });
 
-// Clear button
-document.getElementById("clear-btn").addEventListener("click", () => {
-  chrome.storage.local.set({ stats: [] }, () => renderStats([]));
-});
+document.getElementById('clear-btn').onclick = () => {
+  chrome.storage.local.remove('spm_history', () => {
+    document.getElementById('recent').innerHTML = `<div class="no-data"><div class="icon">🗑️</div>History cleared.</div>`;
+  });
+};
