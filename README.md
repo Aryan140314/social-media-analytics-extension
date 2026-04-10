@@ -1,23 +1,22 @@
-# Social Media Analytics Extension (v2)
+# Social Media Analytics Extension (v3)
 
 ## 📌 Overview
 
-Version 2 of the Social Media Analytics Extension introduces a sidebar-based UI, improved DOM extraction, and media handling features for Instagram and Facebook.
-
-This version enhances usability and provides better interaction with extracted data.
+Version 3 introduces a modular and scalable architecture for the Social Media Analytics Extension. The system is now divided into separate components for extraction, monitoring, and UI, improving maintainability and performance.
 
 ---
 
 ## 🚀 Features
 
-| Feature            | Description                                        |
-| ------------------ | -------------------------------------------------- |
-| Sidebar UI         | Interactive panel injected into social media pages |
-| Post Analytics     | Extract likes, comments, and basic engagement data |
-| Media Extraction   | Detect and collect image/video URLs                |
-| Bulk Download      | Download multiple media files from posts           |
-| Notifications      | Show alerts for actions like downloads             |
-| Improved Selectors | More reliable DOM scraping logic                   |
+| Feature                  | Description                                                        |
+| ------------------------ | ------------------------------------------------------------------ |
+| Modular Architecture     | Separation of logic into extractor, monitor, UI, and utils modules |
+| Improved Data Extraction | Cleaner and more structured DOM parsing                            |
+| State Management         | Centralized handling of analytics data                             |
+| Monitoring System        | Tracks changes in post metrics over time                           |
+| Sidebar UI               | Enhanced interactive interface                                     |
+| Media Handling           | Improved media detection and extraction                            |
+| Persistent Storage       | Saves history using Chrome storage                                 |
 
 ---
 
@@ -31,7 +30,7 @@ Download or clone this repository
 
 Open browser and go to:
 
-```id="a1k29x"
+```id="v1az9f"
 chrome://extensions/
 ```
 
@@ -39,7 +38,7 @@ chrome://extensions/
 
 Enable:
 
-```text id="z2mxo1"
+```text id="w7yzq1"
 Developer Mode
 ```
 
@@ -47,7 +46,7 @@ Developer Mode
 
 Click:
 
-```text id="l9q1bc"
+```text id="g91z2k"
 Load unpacked
 ```
 
@@ -60,34 +59,38 @@ Select the project folder
 ## ▶️ How to Use
 
 1. Open Instagram or Facebook
-2. Navigate to any post
-3. Click on the extension icon
-4. Sidebar will appear
+2. Navigate to a post
+3. Click the extension icon
+4. Sidebar will open
 5. View:
 
    * Likes
    * Comments
-   * Media
-6. Use download button to save media
+   * Media URLs
+6. Monitor changes in engagement over time
+7. Use controls for downloading media
 
 ---
 
 ## ⚠️ Limitations
 
-* Relies on DOM structure (can break if UI changes)
-* Not all posts expose full data
-* Comment count may be approximate
-* No API-based scraping yet
+* Still relies on DOM scraping (not fully stable)
+* Dynamic UI changes may break selectors
+* API interception not yet implemented
+* Limited accuracy for hidden metrics
 
 ---
 
 ## 📂 Project Structure
 
-```
+```id="q2n1bz"
 manifest.json
 background.js
 content/
-  injector.js
+  extractor.js
+  monitor.js
+  ui.js
+  utils.js
   sidebar.css
 popup/
   popup.html
@@ -97,18 +100,19 @@ icons/
 
 ---
 
-## 📈 Improvements Over v1
+## 📈 Improvements Over v2
 
-* Added UI (sidebar)
-* Improved extraction logic
-* Added media handling
-* Better user interaction
+* Introduced modular architecture
+* Improved maintainability
+* Better performance and organization
+* Added monitoring system
+* Cleaner and reusable code
 
 ---
 
-## 💡 Future Plans
+## 💡 Future Enhancements
 
-* Modular architecture (v3)
-* API-based scraping (v4)
-* Real-time analytics
-* Data visualization
+* API-based scraping (GraphQL interception)
+* Real-time analytics dashboard
+* Chart visualization
+* AI-based insights

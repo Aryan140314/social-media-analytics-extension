@@ -2,74 +2,79 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>SPM Pro</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      width: 320px;
+      width: 320px; min-height: 100px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 13px;
-      background: #f0f2f5;
-      color: #1c1e21;
+      font-size: 13px; background: #f0f2f5; color: #1c1e21;
     }
-    .header {
+    .hdr {
       background: linear-gradient(135deg, #1877f2, #0d65d9);
-      padding: 16px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      padding: 14px 16px; display: flex; align-items: center; gap: 10px;
     }
-    .header-icon { font-size: 26px; }
-    .header-title { font-size: 15px; font-weight: 800; color: #fff; }
-    .header-sub   { font-size: 11px; color: rgba(255,255,255,.75); margin-top: 2px; }
-    .section { background: #fff; margin: 8px; border-radius: 12px; overflow: hidden; }
-    .sec-title { padding: 10px 14px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: #65676b; border-bottom: 1px solid #f0f2f5; background: #fafafa; }
-    .stat-row { padding: 10px 14px; border-bottom: 1px solid #f0f2f5; display: flex; align-items: center; gap: 8px; }
-    .stat-row:last-child { border-bottom: none; }
-    .stat-platform { background: #e7f0fd; color: #1877f2; border-radius: 20px; padding: 2px 8px; font-size: 10px; font-weight: 700; }
-    .stat-url { font-size: 11px; color: #1877f2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-    .badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+    .hdr-icon  { font-size: 26px; }
+    .hdr-title { font-size: 15px; font-weight: 800; color: #fff; }
+    .hdr-sub   { font-size: 11px; color: rgba(255,255,255,.75); margin-top: 1px; }
+    .section { background: #fff; margin: 8px; border-radius: 10px; overflow: hidden; }
+    .sec-title {
+      padding: 9px 14px; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .5px;
+      color: #65676b; border-bottom: 1px solid #f0f2f5; background: #fafafa;
+    }
+    .row {
+      padding: 10px 14px; border-bottom: 1px solid #f0f2f5;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .row:last-child { border-bottom: none; }
+    .row-top { display: flex; align-items: center; gap: 6px; }
+    .plat { background: #e7f0fd; color: #1877f2; border-radius: 20px; padding: 2px 8px; font-size: 10px; font-weight: 700; }
+    .url  { font-size: 11px; color: #1877f2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .badges { display: flex; gap: 5px; flex-wrap: wrap; }
     .badge { background: #f0f2f5; border-radius: 20px; padding: 2px 8px; font-size: 10px; }
-    .stat-time { font-size: 10px; color: #aaa; margin-top: 4px; }
-    .no-data { padding: 24px; text-align: center; color: #aaa; font-size: 12px; }
-    .no-data .icon { font-size: 28px; margin-bottom: 8px; }
+    .time  { font-size: 10px; color: #aaa; }
+    .empty { padding: 22px; text-align: center; color: #aaa; font-size: 12px; }
+    .empty .icon { font-size: 28px; margin-bottom: 6px; }
     .howto { padding: 12px 14px; font-size: 11px; color: #555; line-height: 1.8; }
-    .howto li { margin-left: 14px; margin-bottom: 2px; }
-    .btn-clear { display: block; width: calc(100% - 16px); margin: 4px 8px 8px; padding: 9px; background: #fdecea; color: #c62828; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    .btn-clear:hover { background: #f9d5d4; }
+    .howto li { margin-left: 14px; margin-bottom: 1px; }
+    .btn-clr {
+      display: block; width: calc(100% - 16px); margin: 4px 8px 8px;
+      padding: 8px; background: #fdecea; color: #c62828;
+      border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .btn-clr:hover { background: #f9d5d4; }
     .footer { padding: 8px 14px; font-size: 10px; color: #aaa; text-align: center; border-top: 1px solid #f0f2f5; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="header-icon">📊</div>
+  <div class="hdr">
+    <div class="hdr-icon">📊</div>
     <div>
-      <div class="header-title">Social Post Monitor Pro</div>
-      <div class="header-sub">Facebook & Instagram Analytics</div>
+      <div class="hdr-title">Social Post Monitor Pro</div>
+      <div class="hdr-sub">Facebook &amp; Instagram Analytics</div>
     </div>
   </div>
-
   <div class="section">
     <div class="sec-title">📌 Recent Posts</div>
     <div id="recent"></div>
   </div>
-
-  <button class="btn-clear" id="clear-btn">🗑️ Clear History</button>
-
+  <button class="btn-clr" id="clear-btn">🗑️ Clear History</button>
   <div class="section">
     <div class="sec-title">💡 Quick Guide</div>
     <div class="howto">
       <ul>
         <li>Open any post on Facebook or Instagram</li>
         <li>Click the <strong>📊 FAB button</strong> (bottom-right)</li>
-        <li>Use the <strong>6 tabs</strong> — Stats, Comments, Profile, Analytics, Downloads, Settings</li>
-        <li>Enable <strong>Auto-Monitor</strong> to get alerts on changes</li>
+        <li>6 tabs: Stats · Comments · Profile · Analytics · Downloads · Settings</li>
+        <li>Enable <strong>Auto-Monitor</strong> for change alerts</li>
         <li>Go to a profile page for <strong>Bulk Download</strong></li>
+        <li>Use <strong>Dark Mode</strong> in Settings tab</li>
       </ul>
     </div>
   </div>
-
-  <div class="footer">SPM Pro v2.0 · Brave / Chrome / Edge</div>
+  <div class="footer">SPM Pro v3.0 · Brave / Chrome / Edge</div>
   <script src="popup.js"></script>
 </body>
 </html>
