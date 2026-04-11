@@ -1,53 +1,69 @@
 // ═══════════════════════════════════════════════════════════════
-//  SPM Pro v3  ·  content/monitor.js
-//  Auto-monitor, SPA navigation, change detection.
-//  No direct UI calls — emits events consumed by ui.js.
+//  SPM Pro v4  ·  content/monitor.js
+//  - MutationObserver on document.body (SPA DOM changes)
+//  - Interval poll as safety net
+//  - Debounced refresh so rapid DOM mutations don't spam scrapes
+//  - Emits events consumed by ui.js only
 // ═══════════════════════════════════════════════════════════════
-
 'use strict';
 
 const SpmMonitor = (() => {
 
-  // ── Internal state ───────────────────────────────────────────
   let _timer        = null;
   let _active       = false;
-  let _interval     = 60;   // seconds
-  let _threshold    = 1;    // min change to alert
+  let _interval     = 60;
+  let _threshold    = 1;
   let _lastStats    = {};
-  let _log          = [];   // bounded array
+  let _log          = [];
   let _navObserver  = null;
+  let _domObserver  = null;
   let _lastUrl      = location.href;
 
-  // ── Event bus (simple pub/sub, no external libs) ─────────────
+  // ── Event bus ────────────────────────────────────────────────
   const _listeners = {};
-  function _on(event, fn)  { (_listeners[event] = _listeners[event] || []).push(fn); }
-  function _emit(event, d) { (_listeners[event] || []).forEach(fn => { try { fn(d); } catch(e) { spmLog.error('emit', e); } }); }
+  function _on(ev, fn) { (_listeners[ev] = _listeners[ev]||[]).push(fn); }
+  function _emit(ev, d) {
+    (_listeners[ev]||[]).forEach(fn => { try { fn(d); } catch(e) { spmLog.error('emit', ev, e); } });
+  }
 
-  // ── Navigation watcher (handles Instagram/FB SPA routing) ────
+  // ── SPA navigation watcher ───────────────────────────────────
+  // MutationObserver detects React DOM swaps; polling covers hash/search changes
   function _startNavWatcher() {
     if (_navObserver) return;
-    // MutationObserver on document.body for child changes (SPA DOM swaps)
-    _navObserver = new MutationObserver(spmThrottle(() => {
+
+    const _handleNavChange = spmDebounce(() => {
       if (location.href !== _lastUrl) {
-        const prev = _lastUrl;
-        _lastUrl = location.href;
-        spmLog.info('Navigation detected:', prev, '→', _lastUrl);
-        _emit('navigate', { from: prev, to: _lastUrl });
-        // Reset per-page state
+        const from = _lastUrl;
+        _lastUrl   = location.href;
         _lastStats = {};
+        SpmExtractor.resetCache();
+        spmClearElCache();
+        spmLog.info('Navigation:', from, '→', _lastUrl);
+        _emit('navigate', { from, to: _lastUrl });
       }
-    }, 500));
+    }, 600);
+
+    // MutationObserver — triggers on every React re-render
+    _navObserver = new MutationObserver(_handleNavChange);
     _navObserver.observe(document.body, { childList: true, subtree: true });
 
-    // Also poll as a safety net for hash/search changes
+    // Polling fallback for pushState / replaceState changes
     setInterval(() => {
-      if (location.href !== _lastUrl) {
-        const prev = _lastUrl;
-        _lastUrl = location.href;
-        _emit('navigate', { from: prev, to: _lastUrl });
-        _lastStats = {};
-      }
+      if (location.href !== _lastUrl) _handleNavChange();
     }, 1500);
+  }
+
+  // ── DOM content watcher ──────────────────────────────────────
+  // Watches the post area for content changes (lazy-loaded stats, carousel swipes)
+  // Debounced heavily so we don't re-scrape on every React re-render
+  function _startDomWatcher(onContentChange) {
+    if (_domObserver) { _domObserver.disconnect(); }
+    const debouncedCb = spmDebounce(onContentChange, 1200);
+    _domObserver = new MutationObserver(debouncedCb);
+    // Observe nearest post container if available, else body
+    const target = document.querySelector('article, [role="main"]') || document.body;
+    _domObserver.observe(target, { childList: true, subtree: true, characterData: true });
+    spmLog.debug('DOM watcher started on', target.tagName);
   }
 
   // ── Monitor tick ─────────────────────────────────────────────
@@ -58,68 +74,57 @@ const SpmMonitor = (() => {
       _lastStats  = fresh;
 
       const alerts = [];
-      const checkField = (key, label) => {
-        const n = spmParseNum(fresh[key]);
-        const o = spmParseNum(prev[key]);
-        if (n == null || o == null) return;
+      const _chk = (key, label) => {
+        const n = fresh[key], o = prev[key];
+        if (n==null || o==null) return;
         const diff = n - o;
-        if (Math.abs(diff) >= _threshold) {
-          alerts.push({ key, label, diff, from: o, to: n });
-        }
+        if (Math.abs(diff) >= _threshold) alerts.push({ key, label, diff, from:o, to:n });
       };
-      checkField('likes',    'Likes');
-      checkField('comments', 'Comments');
-      checkField('shares',   'Shares');
+      _chk('likes',    'Likes');
+      _chk('comments', 'Comments');
+      _chk('shares',   'Shares');
 
-      const logEntry = {
-        ts:     Date.now(),
-        alerts,
-        stats:  { likes: fresh.likes, comments: fresh.comments, shares: fresh.shares },
-        isAlert: alerts.length > 0,
-      };
-      spmBoundedPush(_log, logEntry, SPM.MAX_LOG);
-      _emit('tick', { fresh, prev, alerts, logEntry });
+      const entry = { ts:Date.now(), alerts, stats:{likes:fresh.likes,comments:fresh.comments,shares:fresh.shares}, isAlert:alerts.length>0 };
+      spmBoundedPush(_log, entry, SPM.MAX_LOG);
+      _emit('tick', { fresh, prev, alerts, logEntry:entry });
 
-      // Desktop notification if changes detected
       if (alerts.length > 0) {
-        const msg = alerts.map(a => `${a.label}: ${a.diff > 0 ? '+' : ''}${a.diff.toLocaleString()}`).join(' · ');
-        spmSend({ type: 'NOTIFY', title: '📊 Post Changed', body: msg });
+        const msg = alerts.map(a=>`${a.label}: ${a.diff>0?'+':''}${a.diff.toLocaleString()}`).join(' · ');
+        spmSend({ type:'NOTIFY', title:'📊 Post Changed', body:msg });
       }
-    } catch (err) {
-      spmLog.error('Monitor tick failed:', err);
-    }
+    } catch(e) { spmLog.error('Monitor tick:', e); }
   }
 
   // ── Public API ────────────────────────────────────────────────
-  function start(opts = {}) {
-    if (opts.interval)  _interval  = opts.interval;
-    if (opts.threshold) _threshold = opts.threshold;
+  function init(onContentChange) {
+    _startNavWatcher();
+    if (onContentChange) _startDomWatcher(onContentChange);
+  }
+
+  function start(opts={}) {
+    if (opts.interval)  _interval  = Math.max(10, +opts.interval);
+    if (opts.threshold) _threshold = Math.max(1,  +opts.threshold);
     stop();
     _active = true;
-    _tick(); // immediate first tick
+    _tick();
     _timer = setInterval(_tick, _interval * 1000);
-    spmLog.info('Monitor started, interval:', _interval + 's');
-    _emit('stateChange', { active: true });
+    spmLog.info('Monitor started, interval:', _interval+'s, threshold:', _threshold);
+    _emit('stateChange', { active:true });
   }
 
   function stop() {
-    if (_timer) { clearInterval(_timer); _timer = null; }
+    if (_timer) { clearInterval(_timer); _timer=null; }
     _active = false;
-    _emit('stateChange', { active: false });
+    _emit('stateChange', { active:false });
   }
 
-  function setInterval_(s)   { _interval  = Math.max(10, +s || 60); if (_active) start(); }
-  function setThreshold(n)   { _threshold = Math.max(1,  +n || 1);  }
-  function isActive()        { return _active; }
-  function getLog()          { return [..._log]; }
-  function clearLog()        { _log = []; }
-  function setLastStats(s)   { _lastStats = s; }
-  function on(event, fn)     { _on(event, fn); }
+  function setInterval_(s)  { _interval=Math.max(10,+s||60);  if(_active) start(); }
+  function setThreshold(n)  { _threshold=Math.max(1, +n||1);  }
+  function isActive()       { return _active; }
+  function getLog()         { return [..._log]; }
+  function clearLog()       { _log=[]; }
+  function setLastStats(s)  { _lastStats=s; }
+  function on(ev, fn)       { _on(ev, fn); }
 
-  function init() {
-    _startNavWatcher();
-  }
-
-  return { init, start, stop, setInterval: setInterval_, setThreshold, isActive, getLog, clearLog, setLastStats, on };
-
+  return { init, start, stop, setInterval:setInterval_, setThreshold, isActive, getLog, clearLog, setLastStats, on };
 })();

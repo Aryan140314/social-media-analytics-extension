@@ -1,22 +1,24 @@
-# Social Media Analytics Extension (v3)
+# Social Media Analytics Extension (v4)
 
 ## 📌 Overview
 
-Version 3 introduces a modular and scalable architecture for the Social Media Analytics Extension. The system is now divided into separate components for extraction, monitoring, and UI, improving maintainability and performance.
+Version 4 introduces API-based scraping using network interception (fetch and XMLHttpRequest), making data extraction significantly more reliable compared to DOM-based methods.
+
+This version captures Instagram internal API (GraphQL) responses and extracts structured analytics data in real time.
 
 ---
 
 ## 🚀 Features
 
-| Feature                  | Description                                                        |
-| ------------------------ | ------------------------------------------------------------------ |
-| Modular Architecture     | Separation of logic into extractor, monitor, UI, and utils modules |
-| Improved Data Extraction | Cleaner and more structured DOM parsing                            |
-| State Management         | Centralized handling of analytics data                             |
-| Monitoring System        | Tracks changes in post metrics over time                           |
-| Sidebar UI               | Enhanced interactive interface                                     |
-| Media Handling           | Improved media detection and extraction                            |
-| Persistent Storage       | Saves history using Chrome storage                                 |
+| Feature                  | Description                                         |
+| ------------------------ | --------------------------------------------------- |
+| API Interception         | Intercepts fetch and XMLHttpRequest calls           |
+| GraphQL Scraping         | Extracts data directly from Instagram API responses |
+| Reliable Data Extraction | More stable than DOM scraping                       |
+| Real-Time Capture        | Captures live data as posts load                    |
+| Structured Data Output   | Extracts normalized analytics data                  |
+| Media Extraction         | Retrieves image/video URLs                          |
+| Fallback System          | DOM scraping used when API data unavailable         |
 
 ---
 
@@ -30,7 +32,7 @@ Download or clone this repository
 
 Open browser and go to:
 
-```id="v1az9f"
+```
 chrome://extensions/
 ```
 
@@ -38,7 +40,7 @@ chrome://extensions/
 
 Enable:
 
-```text id="w7yzq1"
+```
 Developer Mode
 ```
 
@@ -46,7 +48,7 @@ Developer Mode
 
 Click:
 
-```text id="g91z2k"
+```
 Load unpacked
 ```
 
@@ -58,38 +60,41 @@ Select the project folder
 
 ## ▶️ How to Use
 
-1. Open Instagram or Facebook
+1. Open Instagram
 2. Navigate to a post
-3. Click the extension icon
-4. Sidebar will open
+3. The extension automatically:
+
+   * Intercepts API requests
+   * Extracts post data
+4. Open the extension UI
 5. View:
 
    * Likes
    * Comments
+   * Caption
    * Media URLs
-6. Monitor changes in engagement over time
-7. Use controls for downloading media
+6. Monitor real-time updates
 
 ---
 
 ## ⚠️ Limitations
 
-* Still relies on DOM scraping (not fully stable)
-* Dynamic UI changes may break selectors
-* API interception not yet implemented
-* Limited accuracy for hidden metrics
+* Depends on Instagram API structure (may change)
+* Some endpoints require user login
+* Not all data is publicly accessible
+* Interception may miss cached requests
 
 ---
 
 ## 📂 Project Structure
 
-```id="q2n1bz"
+```
 manifest.json
 background.js
 content/
+  interceptor.js
   extractor.js
   monitor.js
-  ui.js
   utils.js
   sidebar.css
 popup/
@@ -100,19 +105,18 @@ icons/
 
 ---
 
-## 📈 Improvements Over v2
+## 📈 Improvements Over v3
 
-* Introduced modular architecture
-* Improved maintainability
-* Better performance and organization
-* Added monitoring system
-* Cleaner and reusable code
+* Added API interception layer
+* Improved data reliability
+* Reduced dependency on DOM
+* Better performance and accuracy
 
 ---
 
-## 💡 Future Enhancements
+## 💡 Future Enhancements (v5)
 
-* API-based scraping (GraphQL interception)
-* Real-time analytics dashboard
-* Chart visualization
-* AI-based insights
+* Analytics engine
+* Data visualization
+* ML-based insights
+* Backend integration (Python)

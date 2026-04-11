@@ -396,3 +396,10 @@
 .spm-empty { text-align: center; padding: 28px 0; color: var(--muted); }
 .spm-empty-icon { font-size: 32px; margin-bottom: 8px; }
 .spm-empty p { font-size: 12px; }
+
+/* ── Source badge ──────────────────────────────────────── */
+#spm-source-badge {
+  border-radius: 20px; padding: 2px 8px; font-size: 10px; font-weight: 700;
+}
+.spm-src-api { background: rgba(46,204,113,.3); color: #d5f5e3; }
+.spm-src-dom { background: rgba(255,255,255,.15); color: rgba(255,255,255,.7); }
