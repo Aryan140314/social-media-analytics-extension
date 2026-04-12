@@ -319,8 +319,8 @@ function _updateStatsUI(fresh, prev) {
 // ── Monitor ──────────────────────────────────────────────────────
 function _onMonitor(on) {
   const dot=spmElFresh('spm-monitor-dot');
-  if(on) { SpmMonitor.start({interval:+spmEl('mon-interval').value, threshold:+spmEl('mon-threshold').value}); dot?.classList.add('dot-active'); _addMonitorLog({isAlert:false,ts:Date.now(),msg:'▶ Started'}); }
-  else   { SpmMonitor.stop(); dot?.classList.remove('dot-active'); _addMonitorLog({isAlert:false,ts:Date.now(),msg:'⏹ Stopped'}); }
+  if(on) { SpmMonitor.startAutoMonitor({interval:+spmEl('mon-interval').value, threshold:+spmEl('mon-threshold').value}); dot?.classList.add('dot-active'); _addMonitorLog({isAlert:false,ts:Date.now(),msg:'▶ Started'}); }
+  else   { SpmMonitor.stopAutoMonitor(); dot?.classList.remove('dot-active'); _addMonitorLog({isAlert:false,ts:Date.now(),msg:'⏹ Stopped'}); }
 }
 function _addMonitorLog(entry) {
   const log=spmElFresh('monitor-log'); if(!log) return;

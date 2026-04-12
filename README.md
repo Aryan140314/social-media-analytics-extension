@@ -1,24 +1,27 @@
-# Social Media Analytics Extension (v4)
+# Social Media Analytics Extension (v5)
 
 ## 📌 Overview
 
-Version 4 introduces API-based scraping using network interception (fetch and XMLHttpRequest), making data extraction significantly more reliable compared to DOM-based methods.
+Version 5 introduces a full data pipeline architecture for extracting, processing, and analyzing Instagram data using API interception and a modular analytics engine.
 
-This version captures Instagram internal API (GraphQL) responses and extracts structured analytics data in real time.
+This version transforms the extension into a scalable analytics system with real-time monitoring, structured data processing, and advanced insights.
 
 ---
 
 ## 🚀 Features
 
-| Feature                  | Description                                         |
-| ------------------------ | --------------------------------------------------- |
-| API Interception         | Intercepts fetch and XMLHttpRequest calls           |
-| GraphQL Scraping         | Extracts data directly from Instagram API responses |
-| Reliable Data Extraction | More stable than DOM scraping                       |
-| Real-Time Capture        | Captures live data as posts load                    |
-| Structured Data Output   | Extracts normalized analytics data                  |
-| Media Extraction         | Retrieves image/video URLs                          |
-| Fallback System          | DOM scraping used when API data unavailable         |
+| Feature               | Description                                              |
+| --------------------- | -------------------------------------------------------- |
+| API Interception      | Captures fetch & XMLHttpRequest calls                    |
+| GraphQL Scraping      | Extracts structured Instagram API data                   |
+| Modular Architecture  | Clean separation (interceptor, extractor, analytics, UI) |
+| Data Normalization    | Converts raw values into consistent formats              |
+| Deduplication & Cache | Prevents duplicate processing                            |
+| History Tracking      | Stores engagement data over time                         |
+| Analytics Engine      | Computes engagement, growth, viral score                 |
+| Real-Time Monitoring  | Tracks changes in post metrics                           |
+| CSV Export            | Export collected data                                    |
+| Fallback System       | DOM scraping used if API fails                           |
 
 ---
 
@@ -26,7 +29,7 @@ This version captures Instagram internal API (GraphQL) responses and extracts st
 
 ### Step 1
 
-Download or clone this repository
+Clone or download this repository
 
 ### Step 2
 
@@ -62,27 +65,28 @@ Select the project folder
 
 1. Open Instagram
 2. Navigate to a post
-3. The extension automatically:
+3. Extension automatically:
 
    * Intercepts API requests
-   * Extracts post data
-4. Open the extension UI
+   * Extracts structured data
+4. Open extension panel
 5. View:
 
    * Likes
    * Comments
-   * Caption
-   * Media URLs
-6. Monitor real-time updates
+   * Media
+   * Engagement rate
+6. Enable monitoring for real-time tracking
+7. Export data using CSV button
 
 ---
 
 ## ⚠️ Limitations
 
 * Depends on Instagram API structure (may change)
-* Some endpoints require user login
-* Not all data is publicly accessible
-* Interception may miss cached requests
+* Some endpoints require login
+* Data availability varies by post type
+* Network interception may miss cached requests
 
 ---
 
@@ -94,8 +98,10 @@ background.js
 content/
   interceptor.js
   extractor.js
+  analytics.js
   monitor.js
   utils.js
+  ui.js
   sidebar.css
 popup/
   popup.html
@@ -105,18 +111,19 @@ icons/
 
 ---
 
-## 📈 Improvements Over v3
+## 📈 Improvements Over v4
 
-* Added API interception layer
-* Improved data reliability
-* Reduced dependency on DOM
-* Better performance and accuracy
+* Full data pipeline implementation
+* Analytics engine added
+* Deduplication and caching system
+* History tracking
+* Improved scalability and performance
 
 ---
 
-## 💡 Future Enhancements (v5)
+## 💡 Future Scope
 
-* Analytics engine
-* Data visualization
-* ML-based insights
-* Backend integration (Python)
+* Machine Learning insights
+* Trend prediction
+* Backend integration (Python/FastAPI)
+* Advanced dashboard with charts
