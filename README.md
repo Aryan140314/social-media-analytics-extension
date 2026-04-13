@@ -1,27 +1,28 @@
-# Social Media Analytics Extension (v5)
+# Social Media Analytics Extension (v6)
 
 ## 📌 Overview
 
-Version 5 introduces a full data pipeline architecture for extracting, processing, and analyzing Instagram data using API interception and a modular analytics engine.
+Version 6 is the most advanced version of the Social Media Analytics Extension, featuring a robust data pipeline, improved API interception, enhanced analytics engine, and better error handling.
 
-This version transforms the extension into a scalable analytics system with real-time monitoring, structured data processing, and advanced insights.
+This version focuses on stability, accuracy, and scalability, making the extension more reliable for real-time social media analysis.
 
 ---
 
 ## 🚀 Features
 
-| Feature               | Description                                              |
-| --------------------- | -------------------------------------------------------- |
-| API Interception      | Captures fetch & XMLHttpRequest calls                    |
-| GraphQL Scraping      | Extracts structured Instagram API data                   |
-| Modular Architecture  | Clean separation (interceptor, extractor, analytics, UI) |
-| Data Normalization    | Converts raw values into consistent formats              |
-| Deduplication & Cache | Prevents duplicate processing                            |
-| History Tracking      | Stores engagement data over time                         |
-| Analytics Engine      | Computes engagement, growth, viral score                 |
-| Real-Time Monitoring  | Tracks changes in post metrics                           |
-| CSV Export            | Export collected data                                    |
-| Fallback System       | DOM scraping used if API fails                           |
+| Feature                   | Description                                        |
+| ------------------------- | -------------------------------------------------- |
+| Advanced API Interception | Intercepts fetch and XMLHttpRequest calls          |
+| Multi-Endpoint Support    | Handles GraphQL and multiple API endpoints         |
+| Modular Data Pipeline     | interceptor → monitor → extractor → analytics → UI |
+| Improved Error Handling   | Prevents crashes and logs issues                   |
+| Data Normalization        | Converts raw data into structured format           |
+| Deduplication System      | Avoids duplicate data processing                   |
+| Caching Layer             | Improves performance and reduces redundant work    |
+| Real-Time Monitoring      | Tracks engagement changes over time                |
+| Analytics Engine          | Computes engagement rate, growth, and trends       |
+| CSV Export                | Export analytics data                              |
+| UI Improvements           | Cleaner and more stable interface                  |
 
 ---
 
@@ -29,7 +30,7 @@ This version transforms the extension into a scalable analytics system with real
 
 ### Step 1
 
-Clone or download this repository
+Download or clone this repository
 
 ### Step 2
 
@@ -41,19 +42,11 @@ chrome://extensions/
 
 ### Step 3
 
-Enable:
-
-```
-Developer Mode
-```
+Enable **Developer Mode**
 
 ### Step 4
 
-Click:
-
-```
-Load unpacked
-```
+Click **Load unpacked**
 
 ### Step 5
 
@@ -64,29 +57,29 @@ Select the project folder
 ## ▶️ How to Use
 
 1. Open Instagram
-2. Navigate to a post
+2. Navigate to any post
 3. Extension automatically:
 
    * Intercepts API requests
    * Extracts structured data
-4. Open extension panel
+4. Open the extension panel
 5. View:
 
    * Likes
    * Comments
-   * Media
    * Engagement rate
-6. Enable monitoring for real-time tracking
-7. Export data using CSV button
+   * Media URLs
+6. Enable monitoring for real-time updates
+7. Export data using CSV option
 
 ---
 
 ## ⚠️ Limitations
 
-* Depends on Instagram API structure (may change)
-* Some endpoints require login
-* Data availability varies by post type
-* Network interception may miss cached requests
+* Depends on Instagram API (may change anytime)
+* Some data requires login session
+* Network interception may miss cached responses
+* Not all metrics are publicly available
 
 ---
 
@@ -111,13 +104,13 @@ icons/
 
 ---
 
-## 📈 Improvements Over v4
+## 📈 Improvements Over v5
 
-* Full data pipeline implementation
-* Analytics engine added
-* Deduplication and caching system
-* History tracking
-* Improved scalability and performance
+* Better error handling and stability
+* Improved data pipeline reliability
+* Enhanced UI performance
+* More accurate data extraction
+* Reduced crashes and undefined states
 
 ---
 
@@ -126,4 +119,4 @@ icons/
 * Machine Learning insights
 * Trend prediction
 * Backend integration (Python/FastAPI)
-* Advanced dashboard with charts
+* Advanced visualization dashboard

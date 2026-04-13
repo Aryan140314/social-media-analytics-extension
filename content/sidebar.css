@@ -403,3 +403,26 @@
 }
 .spm-src-api { background: rgba(46,204,113,.3); color: #d5f5e3; }
 .spm-src-dom { background: rgba(255,255,255,.15); color: rgba(255,255,255,.7); }
+
+/* ── Source badge ──────────────────────────────────────── */
+#spm-source-badge { border-radius:20px;padding:2px 8px;font-size:10px;font-weight:700; }
+.spm-src-api { background:rgba(46,204,113,.3);color:#d5f5e3; }
+.spm-src-dom { background:rgba(255,255,255,.15);color:rgba(255,255,255,.7); }
+
+/* ── Viral score card ──────────────────────────────────── */
+.spm-viral-card { background:var(--bg);border-radius:var(--radius);border:1px solid var(--border);padding:12px;margin-bottom:8px; }
+.spm-viral-header { display:flex;align-items:center;justify-content:space-between; }
+.spm-viral-label-text { font-size:13px;font-weight:700;color:var(--text); }
+.spm-viral-score-wrap { position:relative;width:44px;height:44px;flex-shrink:0; }
+.spm-viral-ring { width:44px;height:44px; }
+#spm-viral-score { position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:11px;font-weight:800;color:var(--text); }
+.spm-viral-signals { margin-top:8px;display:flex;flex-direction:column;gap:3px; }
+.spm-signal-item { display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:2px 0; }
+.spm-signal-weight { color:var(--green);font-weight:600; }
+
+/* ── Analytics summary tiles ───────────────────────────── */
+.spm-analytics-summary { display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px; }
+.spm-analytics-tile { background:var(--bg);border-radius:var(--radius);border:1px solid var(--border);padding:10px;text-align:center; }
+.spm-analytics-tile.viral { border-color:#e74c3c;background:rgba(231,76,60,.06); }
+.spm-analytics-tile-val { font-size:16px;font-weight:800;color:var(--text); }
+.spm-analytics-tile-label { font-size:10px;color:var(--muted);text-transform:uppercase;margin-top:2px; }

@@ -1,272 +1,180 @@
 /**
- * SPM Pro v5 · content/monitor.js
- *
- * Integration layer — connects the 4 modules into a pipeline:
- *
- *  [network] → interceptor.js (MAIN world)
- *           → postMessage IG_API_RESPONSE
- *           → monitor.js (ISOLATED world) [here]
- *           → SpmExtractor.extractPostData()
- *           → SpmAnalytics.computeEngagement / detectViral
- *           → PUSH_HISTORY to background.js
- *           → emit events → ui.js
- *
- * Also handles:
- *  • SPA navigation (MutationObserver + polling)
- *  • DOM content change detection (debounced MutationObserver)
- *  • Periodic auto-monitor with change alerts
+ * SPM Pro v6 · content/monitor.js
+ * Pipeline: interceptor → postMessage → extract → analyse → storage → UI events
+ * Fixes: uses processApiPayload (rate-limited), SpmStorage (structured), event bus
  */
 'use strict';
 
 const SpmMonitor = (() => {
 
-  // ── State ─────────────────────────────────────────────────
-  let _monitorTimer        = null;
-  let _monitorActive       = false;
-  let _monitorInterval     = 60;    // seconds
-  let _alertThreshold      = 1;     // min absolute change for alert
-  let _lastStats           = {};
-  let _log                 = [];    // bounded event log
-  let _navObserver         = null;
-  let _domObserver         = null;
-  let _lastUrl             = location.href;
-  let _interceptorInjected = false;
+  let _monitorTimer=null, _monitorActive=false, _monitorInterval=60, _alertThreshold=1;
+  let _lastStats={}, _log=[], _lastUrl=location.href;
+  let _interceptorInjected=false, _localHistory=[];
+  const _histDedup=SpmDedup(500);
 
-  // ── History (per-page, capped) ────────────────────────────
-  const _localHistory = [];
+  // ── Event bus ────────────────────────────────────────────
+  const _bus={};
+  function _on(ev,fn){(_bus[ev]=_bus[ev]??[]).push(fn);}
+  function _emit(ev,d){(_bus[ev]??[]).forEach(fn=>{try{fn(d);}catch(e){spmLog.error('EventBus',ev,e);}});}
 
-  // ── Event bus ─────────────────────────────────────────────
-  const _bus = {};
-  function _on(ev, fn)  { (_bus[ev] = _bus[ev] ?? []).push(fn); }
-  function _emit(ev, d) { (_bus[ev] ?? []).forEach(fn => { try { fn(d); } catch(e) { spmLog.error('EventBus', ev, e); } }); }
-
-  // ── Dedup for PUSH_HISTORY (avoid writing duplicates) ─────
-  const _histDedup = SpmDedup(500);
-
-  // ════════════════════════════════════════════════════════
-  //  STEP 1 — Inject interceptor.js into MAIN world
-  // ════════════════════════════════════════════════════════
+  // ── Inject interceptor ────────────────────────────────────
   function _injectInterceptor() {
-    if (_interceptorInjected) return;
+    if(_interceptorInjected) return;
     try {
-      const s    = document.createElement('script');
-      s.src      = chrome.runtime.getURL('content/interceptor.js');
-      s.onload   = function () { this.remove(); spmLog.info('Interceptor injected ✓'); };
-      s.onerror  = function () { spmLog.warn('Interceptor injection failed — DOM fallback only'); this.remove(); };
-      (document.head ?? document.documentElement).appendChild(s);
-      _interceptorInjected = true;
-    } catch (e) { spmLog.error('_injectInterceptor:', e); }
+      const s=document.createElement('script');
+      s.src=chrome.runtime.getURL('content/interceptor.js');
+      s.onload=function(){this.remove();spmLog.info('[Monitor] Interceptor injected ✓');};
+      s.onerror=function(){spmLog.warn('[Monitor] Interceptor failed — DOM-only mode');this.remove();};
+      (document.head??document.documentElement).appendChild(s);
+      _interceptorInjected=true;
+    } catch(e){spmLog.error('[Monitor] _injectInterceptor:',e);}
   }
 
-  // ════════════════════════════════════════════════════════
-  //  STEP 2 — Listen for IG_API_RESPONSE postMessages
-  // ════════════════════════════════════════════════════════
+  // ── postMessage listener ──────────────────────────────────
   function _startApiListener() {
-    window.addEventListener('message', async function (event) {
-      // Security: same-origin only
-      if (event.origin && event.origin !== location.origin) return;
-      if (event.data?.type !== 'IG_API_RESPONSE') return;
+    window.addEventListener('message', async function(ev) {
+      if(ev.origin&&ev.origin!==location.origin) return;
+      if(ev.data?.type!=='IG_API_RESPONSE') return;
+      const payload=ev.data?.payload;
+      if(!payload||typeof payload!=='object') return;
 
-      const payload = event.data?.payload;
-      if (!payload || typeof payload !== 'object') return;
-
-      spmLog.debug('postMessage received, keys:', Object.keys(payload));
-
+      spmLog.debug('[Monitor] postMessage received');
       try {
-        // ── STEP 3: Extract via extractor.js ───────────────
-        const postData = SpmExtractor.extractPostData(payload);
-        if (!postData) return; // not a post-containing response
+        // Use rate-limited processApiPayload (fix #4)
+        const postData=SpmExtractor.processApiPayload(payload);
+        if(!postData) return;
 
-        spmLog.info('Pipeline: post extracted', { id: postData.postId, likes: postData.likes });
+        const profile  =SpmExtractor.profile();
+        const comments =SpmExtractor.comments(postData.postId);
+        const report   =SpmAnalytics.buildReport(postData,_localHistory,profile,comments);
 
-        // ── STEP 4: Run analytics ──────────────────────────
-        const profile  = SpmExtractor.profile();
-        const comments = SpmExtractor.comments(postData.postId);
-        const report   = SpmAnalytics.buildReport(postData, _localHistory, profile, comments);
+        const snap=_buildSnap(postData,report);
+        spmBoundedPush(_localHistory,snap,SPM.MAX_HISTORY);
 
-        spmLog.info('Pipeline: analytics', {
-          engageRate: report.engagement.ratePercent,
-          viral:      report.viral.label,
-        });
+        // Structured storage (fix #5)
+        await SpmStorage.saveSnapshot(snap);
 
-        // ── STEP 5: Store in local history (bounded) ───────
-        const snap = _buildSnapshot(postData, report);
-        spmBoundedPush(_localHistory, snap, SPM.MAX_HISTORY);
+        // Also push to background for popup history
+        await _pushBg(snap);
 
-        // ── STEP 6: Persist to background (deduped) ────────
-        await _pushHistory(snap);
+        _emit('apiData',{postData,report});
+        _emit('stats',postData);
+        if(_monitorActive) _checkAlerts(postData);
 
-        // ── STEP 7: Notify UI layer ────────────────────────
-        _emit('apiData',   { postData, report });
-        _emit('stats',     postData);
-
-        // ── STEP 8: Check auto-monitor alerts ─────────────
-        if (_monitorActive) _checkAlerts(postData);
-
-      } catch (e) {
-        spmLog.error('Pipeline error:', e);
-      }
+        spmLog.info('[Monitor] Pipeline complete — likes:',postData.likes,'comments:',postData.comments,'viral:',report.viral.label);
+      } catch(e){spmLog.error('[Monitor] Pipeline error:',e);}
     });
-    spmLog.info('API listener active ✓');
+    spmLog.info('[Monitor] API listener active ✓');
   }
 
-  // ── Build normalised snapshot for history storage ─────────
-  function _buildSnapshot(postData, report) {
-    return {
-      postId:      postData.postId     ?? '',
-      platform:    postData.platform   ?? SPM.PLATFORM,
-      url:         postData.url        ?? location.href,
-      username:    postData.username   ?? '',
-      likes:       postData.likes      ?? null,   // already integers
-      comments:    postData.comments   ?? null,
-      shares:      postData.shares     ?? null,
-      reach:       postData.reach      ?? null,
-      followers:   report.stats.followers ?? null,
-      caption:     (postData.caption   ?? '').slice(0, 200),
-      hashtags:    postData.hashtags   ?? [],
-      mentions:    postData.mentions   ?? [],
-      mediaUrl:    postData.mediaUrl   ?? '',
-      isVideo:     postData.isVideo    ?? false,
-      ts:          Date.now(),
-      postedAt:    postData.ts         ?? null,
-      source:      postData.source     ?? 'api',
-      engageRate:  report.engagement.ratePercent ?? null,
-      viralScore:  report.viral.score   ?? null,
-      viralLabel:  report.viral.label   ?? null,
+  function _buildSnap(postData,report){
+    return{
+      postId:postData.postId??'', platform:postData.platform??SPM.PLATFORM,
+      url:postData.url??location.href, username:postData.username??'',
+      likes:postData.likes??null, comments:postData.comments??null,
+      shares:postData.shares??null, reach:postData.reach??null,
+      followers:report.stats.followers??null,
+      caption:(postData.caption??'').slice(0,200),
+      hashtags:postData.hashtags??[], mentions:postData.mentions??[],
+      mediaUrl:postData.mediaUrl??'', isVideo:postData.isVideo??false,
+      ts:Date.now(), postedAt:postData.ts??null, source:postData.source??'api',
+      engageRate:report.engagement.ratePercent??null,
+      viralScore:report.viral.score??null, viralLabel:report.viral.label??null,
     };
   }
 
-  // ── Push snapshot to background service worker ────────────
-  async function _pushHistory(snap) {
-    const key = (snap.postId || snap.url) + ':' + snap.likes + ':' + snap.comments;
-    if (!_histDedup.isNew(key)) { spmLog.debug('PUSH_HISTORY: dedup skip', key); return; }
-    const res = await spmSend({ type: 'PUSH_HISTORY', data: snap });
-    if (res?.ok) spmLog.info('PUSH_HISTORY OK — likes:', snap.likes, 'engage:', snap.engageRate);
-    else          spmLog.warn('PUSH_HISTORY failed:', res);
+  const _pushBgDedup=SpmDedup(500);
+  async function _pushBg(snap) {
+    const key=(snap.postId||snap.url)+':'+snap.likes+':'+snap.comments;
+    if(!_pushBgDedup.isNew(key)) return;
+    const res=await spmSend({type:'PUSH_HISTORY',data:snap});
+    if(!res?.ok) spmLog.warn('[Monitor] PUSH_HISTORY bg failed');
   }
 
-  // ════════════════════════════════════════════════════════
-  //  SPA NAVIGATION — MutationObserver + polling
-  // ════════════════════════════════════════════════════════
+  // ── SPA navigation ────────────────────────────────────────
   function _startNavWatcher() {
-    if (_navObserver) return;
-
-    const _handle = spmDebounce(() => {
-      if (location.href === _lastUrl) return;
-      const from = _lastUrl;
-      _lastUrl   = location.href;
-      _lastStats = {};
-      SpmExtractor.resetCache();
-      spmClearElCache();
-      spmLog.info('Navigation:', from.split('/').pop(), '→', _lastUrl.split('/').pop());
-      _emit('navigate', { from, to: _lastUrl });
-    }, 600);
-
-    _navObserver = new MutationObserver(_handle);
-    _navObserver.observe(document.body, { childList: true, subtree: true });
-    // Polling fallback for pushState / hash changes
-    setInterval(() => { if (location.href !== _lastUrl) _handle(); }, 1500);
+    const handle=spmDebounce(()=>{
+      if(location.href===_lastUrl) return;
+      const from=_lastUrl; _lastUrl=location.href; _lastStats={};
+      SpmExtractor.resetCache(); spmClearElCache();
+      spmLog.info('[Monitor] Navigate:',from.split('/').pop(),'→',_lastUrl.split('/').pop());
+      _emit('navigate',{from,to:_lastUrl});
+    },600);
+    new MutationObserver(handle).observe(document.body,{childList:true,subtree:true});
+    setInterval(()=>{if(location.href!==_lastUrl)handle();},1500);
   }
 
-  // ════════════════════════════════════════════════════════
-  //  DOM CONTENT WATCHER — re-scrape on lazy-loaded updates
-  // ════════════════════════════════════════════════════════
-  function _startDomWatcher(onContentChange) {
-    if (_domObserver) _domObserver.disconnect();
-    const debounced = spmDebounce(onContentChange, 1200);
-    _domObserver    = new MutationObserver(debounced);
-    const root      = document.querySelector('article, [role="main"]') ?? document.body;
-    _domObserver.observe(root, { childList: true, subtree: true, characterData: true });
+  function _startDomWatcher(cb) {
+    const deb=spmDebounce(cb,1200);
+    const obs=new MutationObserver(deb);
+    const root=document.querySelector('article,[role="main"]')??document.body;
+    obs.observe(root,{childList:true,subtree:true,characterData:true});
   }
 
-  // ════════════════════════════════════════════════════════
-  //  AUTO-MONITOR — periodic tick with change detection
-  // ════════════════════════════════════════════════════════
+  // ── Auto-monitor ──────────────────────────────────────────
   async function _tick() {
     try {
-      const fresh = SpmExtractor.stats();
-      _checkAlerts(fresh);
-      _lastStats = fresh;
-      _emit('tick', { fresh, prev: _lastStats });
-    } catch (e) { spmLog.error('Monitor tick:', e); }
+      const fresh=SpmExtractor.stats();
+      _checkAlerts(fresh); _lastStats=fresh; _emit('tick',{fresh,prev:_lastStats});
+    } catch(e){spmLog.error('[Monitor] tick:',e);}
   }
 
   function _checkAlerts(fresh) {
-    const alerts = [];
-    const _chk = (key, label) => {
-      const n = fresh[key], o = _lastStats[key];
-      if (n == null || o == null) return;
-      const diff = n - o;
-      if (Math.abs(diff) >= _alertThreshold) alerts.push({ key, label, diff, from: o, to: n });
-    };
-    _chk('likes',    'Likes');
-    _chk('comments', 'Comments');
-    _chk('shares',   'Shares');
-    if (!alerts.length) return;
-
-    const msg   = alerts.map(a => `${a.label}: ${a.diff > 0 ? '+' : ''}${a.diff.toLocaleString()}`).join(' · ');
-    const entry = { ts: Date.now(), alerts, isAlert: true, msg };
-    spmBoundedPush(_log, entry, SPM.MAX_LOG);
-    _emit('alert', entry);
-    spmSend({ type: 'NOTIFY', title: '📊 Stats Changed', body: msg });
-    spmLog.info('Alert:', msg);
+    const alerts=[];
+    const chk=(k,label)=>{const n=fresh[k],o=_lastStats[k];if(n==null||o==null)return;const d=n-o;if(Math.abs(d)>=_alertThreshold)alerts.push({key:k,label,diff:d,from:o,to:n});};
+    chk('likes','Likes');chk('comments','Comments');chk('shares','Shares');
+    if(!alerts.length) return;
+    const msg=alerts.map(a=>`${a.label}: ${a.diff>0?'+':''}${a.diff.toLocaleString()}`).join(' · ');
+    const entry={ts:Date.now(),alerts,isAlert:true,msg};
+    spmBoundedPush(_log,entry,SPM.MAX_LOG);
+    _emit('alert',entry);
+    spmSend({type:'NOTIFY',title:'📊 Stats Changed',body:msg});
   }
 
-  // ════════════════════════════════════════════════════════
-  //  PUBLIC API
-  // ════════════════════════════════════════════════════════
+  // ── Public API ────────────────────────────────────────────
   function init(onContentChange) {
     _injectInterceptor();
     _startApiListener();
     _startNavWatcher();
-    if (typeof onContentChange === 'function') _startDomWatcher(onContentChange);
-    spmLog.info('SpmMonitor v5 init ✓');
+    if(typeof onContentChange==='function') _startDomWatcher(onContentChange);
+    spmLog.info('[Monitor] v6 init ✓');
   }
 
-  function startAutoMonitor(opts = {}) {
-    if (opts.interval)  _monitorInterval = Math.max(10, +opts.interval);
-    if (opts.threshold) _alertThreshold  = Math.max(1,  +opts.threshold);
+  function startAutoMonitor(opts={}) {
+    if(opts.interval)  _monitorInterval=Math.max(10,+opts.interval);
+    if(opts.threshold) _alertThreshold=Math.max(1,+opts.threshold);
     stopAutoMonitor();
-    _monitorActive = true;
-    _tick();
-    _monitorTimer  = setInterval(_tick, _monitorInterval * 1000);
-    _emit('stateChange', { active: true });
-    spmLog.info(`Auto-monitor: every ${_monitorInterval}s, threshold ${_alertThreshold}`);
+    _monitorActive=true; _tick();
+    _monitorTimer=setInterval(_tick,_monitorInterval*1000);
+    _emit('stateChange',{active:true});
+    spmLog.info('[Monitor] Auto-monitor started, interval:',_monitorInterval+'s');
   }
 
-  function stopAutoMonitor() {
-    if (_monitorTimer) { clearInterval(_monitorTimer); _monitorTimer = null; }
-    _monitorActive = false;
-    _emit('stateChange', { active: false });
+  function stopAutoMonitor(){
+    if(_monitorTimer){clearInterval(_monitorTimer);_monitorTimer=null;}
+    _monitorActive=false; _emit('stateChange',{active:false});
   }
 
-  function getHistory()    { return [..._localHistory]; }
-  function getReport()     {
-    const p = SpmExtractor.getLatestPost();
-    if (!p) return null;
-    return SpmAnalytics.buildReport(p, _localHistory, SpmExtractor.profile(), SpmExtractor.comments(p.postId));
+  async function getHistory() {
+    // Merge local + storage
+    const stored=await SpmStorage.getAllHistory();
+    return stored.length?stored:_localHistory;
   }
 
-  function on(ev, fn)       { _on(ev, fn); }
-  function isActive()       { return _monitorActive; }
-  function getLog()         { return [..._log]; }
-  function clearLog()       { _log = []; }
-  function setLastStats(s)  { _lastStats = s; }
-  function setInterval_(s)  { _monitorInterval = Math.max(10, +s||60); if (_monitorActive) startAutoMonitor(); }
-  function setThreshold(n)  { _alertThreshold  = Math.max(1,  +n||1); }
+  function getReport(){
+    const p=SpmExtractor.getLatestPost();
+    if(!p) return null;
+    return SpmAnalytics.buildReport(p,_localHistory,SpmExtractor.profile(),SpmExtractor.comments(p.postId));
+  }
 
-  return {
-    init,
-    startAutoMonitor,
-    stopAutoMonitor,
-    getHistory,
-    getReport,
-    on,
-    isActive,
-    getLog, clearLog,
-    setLastStats,
-    setInterval:    setInterval_,
-    setThreshold,
-  };
+  function on(ev,fn){_on(ev,fn);}
+  function isActive(){return _monitorActive;}
+  function getLog(){return[..._log];}
+  function clearLog(){_log=[];}
+  function setLastStats(s){_lastStats=s;}
+  function setInterval_(s){_monitorInterval=Math.max(10,+s||60);if(_monitorActive)startAutoMonitor();}
+  function setThreshold(n){_alertThreshold=Math.max(1,+n||1);}
 
+  return{init,startAutoMonitor,stopAutoMonitor,getHistory,getReport,
+    on,isActive,getLog,clearLog,setLastStats,setInterval:setInterval_,setThreshold};
 })();
