@@ -1,10 +1,10 @@
-# Social Media Analytics Extension (v6)
+# Social Media Analytics Extension (v7)
 
 ## 📌 Overview
 
-Version 6 is the most advanced version of the Social Media Analytics Extension, featuring a robust data pipeline, improved API interception, enhanced analytics engine, and better error handling.
+Version 7 is the final production-ready version of the Social Media Analytics Extension. It features a robust and optimized data pipeline, improved API interception, enhanced analytics engine, and stable UI for real-time social media analysis.
 
-This version focuses on stability, accuracy, and scalability, making the extension more reliable for real-time social media analysis.
+This version focuses on performance, accuracy, and maintainability.
 
 ---
 
@@ -12,17 +12,17 @@ This version focuses on stability, accuracy, and scalability, making the extensi
 
 | Feature                   | Description                                        |
 | ------------------------- | -------------------------------------------------- |
-| Advanced API Interception | Intercepts fetch and XMLHttpRequest calls          |
-| Multi-Endpoint Support    | Handles GraphQL and multiple API endpoints         |
-| Modular Data Pipeline     | interceptor → monitor → extractor → analytics → UI |
-| Improved Error Handling   | Prevents crashes and logs issues                   |
+| Advanced API Interception | Intercepts fetch and XMLHttpRequest requests       |
+| Multi-Endpoint Support    | Handles GraphQL and multiple API responses         |
+| Optimized Data Pipeline   | interceptor → monitor → extractor → analytics → UI |
+| Improved Error Handling   | Prevents crashes and ensures stability             |
 | Data Normalization        | Converts raw data into structured format           |
 | Deduplication System      | Avoids duplicate data processing                   |
-| Caching Layer             | Improves performance and reduces redundant work    |
-| Real-Time Monitoring      | Tracks engagement changes over time                |
-| Analytics Engine          | Computes engagement rate, growth, and trends       |
-| CSV Export                | Export analytics data                              |
-| UI Improvements           | Cleaner and more stable interface                  |
+| Caching Layer             | Improves performance and efficiency                |
+| Real-Time Monitoring      | Tracks engagement changes live                     |
+| Advanced Analytics        | Engagement rate, growth rate, trend detection      |
+| CSV Export                | Export analytics data easily                       |
+| UI Optimization           | Faster and cleaner interface                       |
 
 ---
 
@@ -62,7 +62,7 @@ Select the project folder
 
    * Intercepts API requests
    * Extracts structured data
-4. Open the extension panel
+4. Open extension sidebar
 5. View:
 
    * Likes
@@ -76,10 +76,10 @@ Select the project folder
 
 ## ⚠️ Limitations
 
-* Depends on Instagram API (may change anytime)
-* Some data requires login session
+* Depends on Instagram API (can change anytime)
+* Requires active login for full data
+* Some data may not be accessible
 * Network interception may miss cached responses
-* Not all metrics are publicly available
 
 ---
 
@@ -104,19 +104,19 @@ icons/
 
 ---
 
-## 📈 Improvements Over v5
+## 📈 Improvements Over v6
 
-* Better error handling and stability
-* Improved data pipeline reliability
-* Enhanced UI performance
-* More accurate data extraction
-* Reduced crashes and undefined states
+* Optimized data pipeline performance
+* Better error handling and recovery
+* Improved UI responsiveness
+* More accurate analytics calculations
+* Reduced redundant processing
 
 ---
 
 ## 💡 Future Scope
 
 * Machine Learning insights
-* Trend prediction
+* Trend prediction system
 * Backend integration (Python/FastAPI)
 * Advanced visualization dashboard

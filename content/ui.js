@@ -316,6 +316,20 @@ function _updateStatsUI(fresh, prev) {
   const note=spmElFresh('s-reach-note'); if(note) note.style.display=fresh.reachIsNA?'block':'none';
 }
 
+
+// ── Viral score card ──────────────────────────────────────
+function _updateViralCard(viral){
+  const card=spmElFresh('spm-viral-card');
+  if(!card||!viral) return;
+  card.style.display='block';
+  const scoreEl=spmElFresh('spm-viral-score'),labelEl=spmElFresh('spm-viral-label-text');
+  const arc=document.getElementById('spm-viral-arc'),sigs=spmElFresh('spm-viral-signals');
+  if(scoreEl) scoreEl.textContent=viral.score??0;
+  if(labelEl){labelEl.textContent=viral.label??'';labelEl.style.color=viral.score>=60?'#e74c3c':viral.score>=40?'#f39c12':'var(--muted)';}
+  if(arc){const c=113;arc.style.strokeDashoffset=String(c-(((viral.score??0)/100)*c));arc.style.stroke=viral.score>=80?'#e74c3c':viral.score>=60?'#f39c12':viral.score>=40?'#27ae60':'var(--accent)';}
+  if(sigs&&viral.signals?.length) sigs.innerHTML=viral.signals.map(s=>`<div class="spm-signal-item">${spmEsc(s.label)}<span class="spm-signal-weight">+${s.weight}</span></div>`).join('');
+}
+
 // ── Monitor ──────────────────────────────────────────────────────
 function _onMonitor(on) {
   const dot=spmElFresh('spm-monitor-dot');
@@ -502,13 +516,54 @@ function _initResize() {
 
 // ── Monitor + API events → UI ────────────────────────────────────
 function _wireEvents() {
-  SpmMonitor.on('tick', ({fresh,alerts,logEntry})=>{ _ui.current=fresh; _updateStatsUI(fresh,_ui.current); _addMonitorLog(logEntry); });
-  SpmMonitor.on('navigate', ()=>{ spmClearElCache(); _ui.current={}; _ui.comments=[]; _ui.mediaUrls=[]; setTimeout(()=>_scrape(false),2000); });
+  // Tick (auto-monitor periodic)
+  SpmMonitor.on('tick', ({fresh})=>{
+    if(!fresh) return;
+    _ui.current=fresh;
+    _updateStatsUI(fresh,_ui.current||{});
+  });
 
-  // React to fresh API data from interceptor
-  window.addEventListener('spm:apiStats', e=>{ spmLog.info('Reacting to API stats event'); _scrape(false); });
-  window.addEventListener('spm:apiProfile', e=>{ _ui.profile=spmNormalise(e.detail); _updateStatsUI(_ui.current,{}); });
-  window.addEventListener('spm:apiComments', e=>{ _ui.comments=e.detail; const ct=spmElFresh('comment-count'); if(ct) ct.textContent=`${_ui.comments.length} comments (from API)`; _renderCommentList(_ui.comments); });
+  // Alert notification
+  SpmMonitor.on('alert', entry=>{ _addMonitorLog(entry); });
+
+  // Monitor state change (started/stopped)
+  SpmMonitor.on('stateChange', ({active})=>{
+    const dot=spmElFresh('spm-monitor-dot');
+    dot?.classList.toggle('dot-active', active);
+  });
+
+  // Navigation — reset UI and re-scrape after page settles
+  SpmMonitor.on('navigate', ()=>{
+    spmClearElCache();
+    _ui.current={}; _ui.comments=[]; _ui.mediaUrls=[]; _ui.latestReport=null;
+    setTimeout(()=>_scrape(false), 2000);
+  });
+
+  // Live API data from pipeline — update stats immediately
+  SpmMonitor.on('apiData', ({postData, report})=>{
+    if(!postData) return;
+    _ui.current    = postData;
+    _ui.mediaUrls  = postData.mediaUrls || [];
+    _ui.latestReport = report ?? null;
+    _updateStatsUI(postData, _ui.current||{});
+    _setSourceBadge('api');
+    if(report?.viral)      _updateViralCard(report.viral);
+    if(report?.engagement) _updateEngageBar(report.engagement);
+    if(_ui.activeTab==='downloads') _renderMediaGrid();
+    if(_ui.activeTab==='analytics') _renderCharts().catch(()=>{});
+    _setStatus('Live API data ✓', 'ok');
+    spmLog.info('[UI] API data displayed: likes', postData.likes, 'comments', postData.comments);
+  });
+
+  // API stats raw event (legacy compat)
+  window.addEventListener('spm:apiStats', ()=>{ _scrape(false); });
+  window.addEventListener('spm:apiComments', e=>{
+    if(!e.detail?.length) return;
+    _ui.comments = e.detail;
+    const ct=spmElFresh('comment-count');
+    if(ct) ct.textContent=`${_ui.comments.length} comments (from API)`;
+    _renderCommentList(_ui.comments);
+  });
 }
 
 // ── Boot ─────────────────────────────────────────────────────────

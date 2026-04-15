@@ -1,17 +1,39 @@
 {
   "manifest_version": 3,
   "name": "Social Post Monitor Pro",
-  "version": "6.0.0",
-  "description": "Advanced analytics pipeline — API interception, schema validation, viral detection, Comments/Shares/Reach fixed.",
-  "permissions": ["storage","downloads","notifications"],
-  "optional_permissions": ["tabs"],
-  "host_permissions": ["https://www.facebook.com/*","https://www.instagram.com/*"],
-  "background": {"service_worker": "background.js"},
+  "version": "7.0.0",
+  "description": "SPM Pro v7 \u2014 Fixes: Shares/Reach on Reels, Comments tab, Profile author, history saving, console errors.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "notifications"
+  ],
+  "optional_permissions": [
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://www.instagram.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://www.facebook.com/*","https://www.instagram.com/*"],
-      "js": ["content/utils.js","content/extractor.js","content/analytics.js","content/monitor.js","content/ui.js"],
-      "css": ["content/sidebar.css"],
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://www.instagram.com/*"
+      ],
+      "js": [
+        "content/utils.js",
+        "content/extractor.js",
+        "content/analytics.js",
+        "content/monitor.js",
+        "content/ui.js"
+      ],
+      "css": [
+        "content/sidebar.css"
+      ],
       "run_at": "document_idle",
       "world": "ISOLATED"
     }
@@ -19,13 +41,29 @@
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "Social Post Monitor Pro",
-    "default_icon": {"16":"icons/icon16.png","48":"icons/icon48.png","128":"icons/icon128.png"}
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
-  "icons": {"16":"icons/icon16.png","48":"icons/icon48.png","128":"icons/icon128.png"},
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "web_accessible_resources": [
     {
-      "resources": ["content/interceptor.js","icons/icon16.png","icons/icon48.png","icons/icon128.png"],
-      "matches": ["https://www.facebook.com/*","https://www.instagram.com/*"]
+      "resources": [
+        "content/interceptor.js",
+        "icons/icon16.png",
+        "icons/icon48.png",
+        "icons/icon128.png"
+      ],
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://www.instagram.com/*"
+      ]
     }
   ]
 }
