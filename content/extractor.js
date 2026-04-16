@@ -1,113 +1,142 @@
 /**
- * SPM Pro v7 · content/extractor.js
+ * SPM Pro v8 · content/extractor.js
+ * ─────────────────────────────────────────────────────────────
+ * Data extraction layer.
+ * Primary  : extractPostData(rawApiJson)  — called by monitor.js
+ * Fallback : stats() / profile() / comments() — DOM scraping
  *
- * BUG FIXES in this version (from screenshots):
- *
- * FIX 1 – Shares always "—" on Reels
- *   Root cause: action button counts on Reels are in SVG-sibling spans,
- *   not in text like "308 shares". Added aria-label digit scan + vertical
- *   action panel scan for every action type.
- *
- * FIX 2 – Comments count "—" on post view
- *   Root cause: "193" is inside a button aria-label="193 comments".
- *   Previous selector missed it. Added dedicated aria-label scan.
- *
- * FIX 3 – Reach/Views always "—"
- *   Root cause: View count on Reels is rendered as a plain <span> in the
- *   video overlay, NOT next to a "views" label. Added a full-page numeric
- *   scan targeting the video play counter.
- *
- * FIX 4 – Comments tab shows "0 found"
- *   Root cause: _igDomComments() used `ul > li` which Instagram Reels
- *   no longer use. Comments are in role="listitem" divs or have a
- *   time/Reply sibling pattern. Complete rewrite with 4 strategies.
- *
- * FIX 5 – Profile shows wrong account ("Sexy munda" instead of post author)
- *   Root cause: profile() scraped the first <header> img + title on the
- *   page, which could be a commenter's hover card.
- *   Fix: extract post author ONLY from Reel overlay / post header /
- *   og:title, never from comment sections.
- *
- * FIX 6 – "Failed" / console errors → analytics/history save broken
- *   Root cause: buildReport() called with null postData; spmSend failing
- *   silently; SpmStorage.saveSnapshot throwing on missing postId.
- *   Fix: null-guard everywhere, ensure postId fallback to URL hash.
+ * BUG FIXES:
+ *  #5  Handles all known Instagram GraphQL response shapes
+ *  #6  Optional chaining on every API field access
+ *  #7  Dedup key = postId:likes:comments  (NOT url+length)
+ *  #9  try/catch error boundary in every public function
+ *  #13 Race condition guard: _fromNode returns cached if dedupe hit
  */
 'use strict';
 
 const SpmExtractor = (() => {
 
-  // ── Caches ────────────────────────────────────────────────
+  // ── Internal state ────────────────────────────────────────
   const _postCache    = SpmCache(SPM.MAX_CACHE);
   const _profileCache = SpmCache(200);
   const _commentCache = SpmCache(200);
-  const _apiDedup     = SpmDedup(2000);
+  // FIX #7: dedup key uses postId:likes:comments, not url+byteLength
+  const _seenPosts    = SpmDedup(2000);
 
   let _latestPost    = null;
   let _latestProfile = null;
 
-  // Rate-limited entry point – prevents pipeline hammering
-  const processApiPayload = spmRateLimit(function (payload) {
-    if (!payload || typeof payload !== 'object') return null;
+  // Rate-limit so rapid DOM mutations don't flood the pipeline
+  const processApiPayload = spmRateLimit(_safeExtract, 600);
+
+  function _safeExtract(payload) {
+    // FIX #9: error boundary — extractor failure must not crash pipeline
     try { return extractPostData(payload); }
-    catch (e) { spmLog.error('[Extractor] processApiPayload:', e); return null; }
-  }, 800);
-
-  // ══════════════════════════════════════════════════════════
-  //  PRIMARY — extractPostData(apiResponse)
-  // ══════════════════════════════════════════════════════════
-  function extractPostData(apiResponse) {
-    if (!apiResponse || typeof apiResponse !== 'object') return null;
-    try {
-      const xdt = apiResponse?.data?.xdt_shortcode_media;
-      if (safeExtract(xdt)) return _fromNode(xdt);
-
-      const sc = apiResponse?.data?.shortcode_media;
-      if (safeExtract(sc)) return _fromNode(sc);
-
-      const edges = apiResponse?.data?.user?.edge_owner_to_timeline_media?.edges;
-      if (Array.isArray(edges) && edges.length > 0) {
-        _extractProfile(apiResponse?.data?.user);
-        const node = edges[0]?.node;
-        if (safeExtract(node)) return _fromNode(node);
-      }
-
-      const tagEdges = apiResponse?.data?.hashtag?.edge_hashtag_to_media?.edges;
-      if (Array.isArray(tagEdges) && tagEdges.length > 0) {
-        const node = tagEdges[0]?.node;
-        if (safeExtract(node)) return _fromNode(node);
-      }
-
-      // Reels / Clips shapes
-      const clip = apiResponse?.data?.xdt_api__v1__clips__home__connection_v2?.edges?.[0]?.node?.media
-                ?? apiResponse?.items?.[0]
-                ?? apiResponse?.media;
-      if (safeExtract(clip)) return _fromNode(clip);
-
-      return _deepWalk(apiResponse);
-    } catch (e) { spmLog.error('[Extractor] extractPostData:', e); return null; }
+    catch (e) { spmLog.error('[Extractor] processApiPayload boundary:', e.message); return null; }
   }
 
+  // ════════════════════════════════════════════════════════
+  //  extractPostData(raw)
+  //  FIX #5: handles ALL known Instagram response shapes
+  // ════════════════════════════════════════════════════════
+  function extractPostData(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+
+    // Log shape for debugging
+    spmLog.debug('[Extractor] Trying shapes on keys:', Object.keys(raw).slice(0,6));
+
+    try {
+
+      // ── Shape 1: Single post page (modern)  ─────────────
+      // data.data.xdt_shortcode_media
+      const xdt = raw?.data?.xdt_shortcode_media;
+      if (safeExtract(xdt)) {
+        spmLog.pipe('[Extractor] Shape 1: xdt_shortcode_media');
+        return _fromNode(xdt);
+      }
+
+      // ── Shape 2: Single post page (legacy) ──────────────
+      // data.data.shortcode_media
+      const sc = raw?.data?.shortcode_media;
+      if (safeExtract(sc)) {
+        spmLog.pipe('[Extractor] Shape 2: shortcode_media');
+        return _fromNode(sc);
+      }
+
+      // ── Shape 3: User timeline / feed ───────────────────
+      // data.data.user.edge_owner_to_timeline_media.edges[0].node
+      const tlEdges = raw?.data?.user?.edge_owner_to_timeline_media?.edges;
+      if (Array.isArray(tlEdges) && tlEdges.length > 0) {
+        spmLog.pipe('[Extractor] Shape 3: timeline edges');
+        _tryExtractProfile(raw?.data?.user);
+        const node = tlEdges[0]?.node;
+        if (safeExtract(node)) return _fromNode(node);
+      }
+
+      // ── Shape 4: Hashtag feed ────────────────────────────
+      // data.data.hashtag.edge_hashtag_to_media.edges[0].node
+      const htEdges = raw?.data?.hashtag?.edge_hashtag_to_media?.edges;
+      if (Array.isArray(htEdges) && htEdges.length > 0) {
+        spmLog.pipe('[Extractor] Shape 4: hashtag feed');
+        const node = htEdges[0]?.node;
+        if (safeExtract(node)) return _fromNode(node);
+      }
+
+      // ── Shape 5: Reels / Clips ───────────────────────────
+      // data.data.xdt_api__v1__clips__... OR items[0] OR media
+      const reelEdges = raw?.data?.xdt_api__v1__clips__home__connection_v2?.edges;
+      if (Array.isArray(reelEdges) && reelEdges.length > 0) {
+        spmLog.pipe('[Extractor] Shape 5a: clips connection');
+        const node = reelEdges[0]?.node?.media ?? reelEdges[0]?.node;
+        if (safeExtract(node)) return _fromNode(node);
+      }
+
+      // ── Shape 6: items[] array (IG API v1 format) ────────
+      if (Array.isArray(raw?.items) && raw.items.length > 0) {
+        spmLog.pipe('[Extractor] Shape 6: items[]');
+        const node = raw.items[0];
+        if (safeExtract(node)) return _fromNode(node);
+      }
+
+      // ── Shape 7: top-level media object ─────────────────
+      if (safeExtract(raw?.media)) {
+        spmLog.pipe('[Extractor] Shape 7: raw.media');
+        return _fromNode(raw.media);
+      }
+
+      // ── Shape 8: deep-walk fallback ──────────────────────
+      // Catches any unknown shape by recursively scanning the tree
+      spmLog.debug('[Extractor] Trying deep-walk fallback');
+      return _deepWalk(raw, 0);
+
+    } catch (e) {
+      spmLog.error('[Extractor] extractPostData:', e.message);
+      return null;
+    }
+  }
+
+  // ── Build a canonical PostData from a validated API node ──
   function _fromNode(node) {
     if (!safeExtract(node)) return null;
-    try {
-      const likes    = normalizeNumber(node.like_count ?? node.edge_media_preview_like?.count ?? node.edge_liked_by?.count ?? null);
-      const comments = normalizeNumber(node.comment_count ?? node.edge_media_to_comment?.count ?? node.edge_media_preview_comment?.count ?? null);
-      const shares   = normalizeNumber(node.reshare_count ?? null);
-      const reach    = normalizeNumber(node.video_view_count ?? node.play_count ?? node.view_count ?? null);
-      const followers= normalizeNumber(node.owner?.edge_followed_by?.count ?? null);
-      const isVideo  = !!(node.is_video || node.video_url || node.product_type === 'igtv' || node.product_type === 'clips');
-      const caption  = node.edge_media_to_caption?.edges?.[0]?.node?.text ?? node.caption?.text ?? node.accessibility_caption ?? '';
-      const username = node.owner?.username ?? node.user?.username ?? '';
-      const mediaUrls= _collectMediaUrls(node).filter(spmValidateUrl).slice(0, SPM.MAX_MEDIA);
-      const ts       = normalizeTimestamp(node.taken_at_timestamp ?? node.taken_at ?? null);
 
-      // FIX 6: ensure postId never empty (fall back to URL hash)
+    try {
+      // FIX #6: optional chaining on EVERY field, normalizeNumber on all counts
+      const likes    = normalizeNumber(node?.like_count ?? node?.edge_media_preview_like?.count ?? node?.edge_liked_by?.count ?? null);
+      const comments = normalizeNumber(node?.comment_count ?? node?.edge_media_to_comment?.count ?? node?.edge_media_preview_comment?.count ?? null);
+      const shares   = normalizeNumber(node?.reshare_count ?? null);
+      const reach    = normalizeNumber(node?.video_view_count ?? node?.play_count ?? node?.view_count ?? null);
+      const followers= normalizeNumber(node?.owner?.edge_followed_by?.count ?? null);
+      const isVideo  = !!(node?.is_video || node?.video_url || node?.product_type === 'igtv' || node?.product_type === 'clips');
+      const caption  = node?.edge_media_to_caption?.edges?.[0]?.node?.text ?? node?.caption?.text ?? node?.accessibility_caption ?? '';
+      const username = node?.owner?.username ?? node?.user?.username ?? '';
+      const ts       = normalizeTimestamp(node?.taken_at_timestamp ?? node?.taken_at ?? null);
+      const mediaUrls= _collectMediaUrls(node).filter(spmValidateUrl).slice(0, SPM.MAX_MEDIA);
+
+      // FIX #7 + FIX #6: postId with guaranteed fallback
       const postId = String(
-        node.id ?? node.shortcode ?? node.pk ?? node.code ??
-        location.href.split('/p/')?.[1]?.split('/')?.[0] ??
-        location.href.split('/reel/')?.[1]?.split('/')?.[0] ??
-        Date.now()
+        node?.id ?? node?.shortcode ?? node?.pk ?? node?.code ??
+        location.href.match(/\/(?:p|reel|tv)\/([^/?#]+)/)?.[1] ??
+        `dom_${Date.now()}`
       );
 
       const postData = {
@@ -115,91 +144,140 @@ const SpmExtractor = (() => {
         caption,
         hashtags:  extractHashtags(caption),
         mentions:  extractMentions(caption),
-        mediaUrls, mediaUrl: mediaUrls[0] ?? '', isVideo, ts,
-        source:   'api',
-        platform: 'instagram',
-        url:      location.href,
+        mediaUrls,
+        mediaUrl:  mediaUrls[0] ?? '',
+        isVideo,   ts,
+        source:    'api',
+        platform:  'instagram',
+        url:       location.href,
       };
 
+      // Schema validation (non-fatal)
       const { valid, errors } = validatePostSchema(postData);
-      if (!valid) spmLog.warn('[Extractor] Schema issues (non-fatal):', errors);
+      if (!valid) spmLog.warn('[Extractor] Schema issues:', errors);
 
-      // Strong dedup key: postId:likes:comments
-      const dedupKey = `${postId}:${likes}:${comments}`;
-      if (_apiDedup.isNew(dedupKey)) {
-        _postCache.set(postId, postData);
-        _latestPost = postData;
-        spmLog.info('[Extractor] ✓ API post:', { postId: postId.slice(0,12), likes, comments, shares, reach, isVideo });
-      } else {
-        spmLog.debug('[Extractor] Dedup skip:', dedupKey);
-        return _latestPost;
+      // FIX #7: strong dedup key — postId + current like/comment counts
+      const dedupKey = `${postId}:${likes ?? 'x'}:${comments ?? 'x'}`;
+      if (!_seenPosts.isNew(dedupKey)) {
+        spmLog.debug('[Extractor] Dedup hit — returning cached:', dedupKey);
+        return _latestPost; // return cached, don't re-process
       }
 
-      if (node.owner) _extractProfile(node.owner);
-      _extractComments(postId, node);
+      // Cache and update latest
+      _postCache.set(postId, postData);
+      _latestPost = postData;
+      spmLog.pipe('[Extractor] ✓ Post stored:', { postId: postId.slice(0,15), likes, comments, shares, reach, isVideo });
+
+      // Side-effects: cache profile and comments if present in same payload
+      if (node?.owner) _tryExtractProfile(node.owner);
+      _tryExtractComments(postId, node);
+
       return postData;
-    } catch (e) { spmLog.error('[Extractor] _fromNode:', e); return null; }
+
+    } catch (e) {
+      spmLog.error('[Extractor] _fromNode:', e.message);
+      return null;
+    }
   }
 
+  // ── Collect all media URLs (handles carousel) ─────────────
   function _collectMediaUrls(node) {
     const urls = new Set();
-    const add  = u => { if (u && typeof u === 'string') urls.add(u); };
-    add(node.display_url); add(node.video_url); add(node.image_versions2?.candidates?.[0]?.url);
-    const sc = node.edge_sidecar_to_children?.edges ?? node.carousel_media ?? [];
-    sc.forEach(e => { const n = e.node ?? e; add(n.display_url); add(n.video_url); add(n.image_versions2?.candidates?.[0]?.url); });
+    const add  = u => { if (u && typeof u === 'string' && u.startsWith('http')) urls.add(u); };
+
+    try {
+      add(node?.display_url);
+      add(node?.video_url);
+      add(node?.image_versions2?.candidates?.[0]?.url);
+
+      // Carousel / sidecar
+      const sidecar = node?.edge_sidecar_to_children?.edges ?? node?.carousel_media ?? [];
+      sidecar.forEach(e => {
+        const n = e?.node ?? e;
+        add(n?.display_url);
+        add(n?.video_url);
+        add(n?.image_versions2?.candidates?.[0]?.url);
+      });
+    } catch (e) { spmLog.debug('[_collectMediaUrls]', e.message); }
+
     return [...urls];
   }
 
-  function _extractProfile(user) {
-    if (!user?.username) return;
-    const p = {
-      username:   user.username,
-      name:       user.full_name ?? '',
-      followers:  normalizeNumber(user.follower_count ?? user.edge_followed_by?.count ?? null),
-      following:  normalizeNumber(user.following_count ?? user.edge_follow?.count ?? null),
-      posts:      normalizeNumber(user.media_count ?? user.edge_owner_to_timeline_media?.count ?? null),
-      bio:        user.biography ?? '',
-      avatarSrc:  user.profile_pic_url_hd ?? user.profile_pic_url ?? '',
-    };
-    _profileCache.set(user.username, p);
-    _latestProfile = p;
-    spmLog.info('[Extractor] Profile cached:', user.username, 'followers:', p.followers);
+  // ── Extract profile from owner/user node ──────────────────
+  function _tryExtractProfile(user) {
+    try {
+      if (!user?.username) return;
+      const p = {
+        username:  user.username,
+        name:      user.full_name ?? '',
+        followers: normalizeNumber(user.follower_count ?? user.edge_followed_by?.count ?? null),
+        following: normalizeNumber(user.following_count ?? user.edge_follow?.count ?? null),
+        posts:     normalizeNumber(user.media_count ?? user.edge_owner_to_timeline_media?.count ?? null),
+        bio:       user.biography ?? '',
+        avatarSrc: user.profile_pic_url_hd ?? user.profile_pic_url ?? '',
+      };
+      _profileCache.set(user.username, p);
+      _latestProfile = p;
+      spmLog.pipe('[Extractor] Profile cached:', user.username, 'followers:', p.followers);
+    } catch (e) { spmLog.debug('[_tryExtractProfile]', e.message); }
   }
 
-  function _extractComments(postId, node) {
-    const edges = node?.edge_media_to_comment?.edges ?? node?.comments?.edges ?? [];
-    if (!edges.length) return;
-    const dedup = SpmDedup(500), list = [];
-    edges.forEach(e => {
-      const n = e?.node; if (!n?.text) return;
-      const key = String(n.id ?? n.text.slice(0, 30));
-      if (!dedup.isNew(key)) return;
-      list.push({
-        id: String(n.id ?? ''), username: n.owner?.username ?? '?', text: n.text,
-        likes: normalizeNumber(n.edge_liked_by?.count ?? null),
-        ts: normalizeTimestamp(n.created_at ?? null),
-        hashtags: extractHashtags(n.text), mentions: extractMentions(n.text),
+  // ── Extract comments from API edges ───────────────────────
+  function _tryExtractComments(postId, node) {
+    try {
+      const edges = node?.edge_media_to_comment?.edges ?? node?.comments?.edges ?? [];
+      if (!edges.length) return;
+      const dedup = SpmDedup(500);
+      const list  = [];
+      edges.forEach(e => {
+        const n = e?.node; if (!n?.text) return;
+        const key = String(n.id ?? n.text.slice(0, 30));
+        if (!dedup.isNew(key)) return;
+        list.push({
+          id:       String(n.id ?? ''),
+          username: n.owner?.username ?? '?',
+          text:     n.text,
+          likes:    normalizeNumber(n.edge_liked_by?.count ?? null),
+          ts:       normalizeTimestamp(n.created_at ?? null),
+          hashtags: extractHashtags(n.text),
+          mentions: extractMentions(n.text),
+        });
       });
-    });
-    if (list.length && postId) _commentCache.set(postId, list);
+      if (list.length && postId) {
+        _commentCache.set(postId, list);
+        spmLog.pipe('[Extractor] Comments cached:', list.length);
+      }
+    } catch (e) { spmLog.debug('[_tryExtractComments]', e.message); }
   }
 
-  function _deepWalk(obj, depth = 0) {
-    if (!obj || typeof obj !== 'object' || depth > 10) return null;
-    if (safeExtract(obj)) { const r = _fromNode(obj); if (r) return r; }
-    if (obj.username && (obj.follower_count != null || obj.edge_followed_by != null)) _extractProfile(obj);
-    for (const child of (Array.isArray(obj) ? obj : Object.values(obj))) {
-      if (child && typeof child === 'object') { const r = _deepWalk(child, depth + 1); if (r) return r; }
-    }
+  // ── Deep-walk fallback (unknown response shape) ───────────
+  function _deepWalk(obj, depth) {
+    if (!obj || typeof obj !== 'object' || depth > 8) return null;
+    try {
+      if (safeExtract(obj)) {
+        const r = _fromNode(obj);
+        if (r) return r;
+      }
+      if (obj.username && (obj.follower_count != null || obj.edge_followed_by != null)) {
+        _tryExtractProfile(obj);
+      }
+      const children = Array.isArray(obj) ? obj : Object.values(obj);
+      for (const child of children) {
+        if (child && typeof child === 'object') {
+          const r = _deepWalk(child, depth + 1);
+          if (r) return r;
+        }
+      }
+    } catch (e) { spmLog.debug('[_deepWalk] depth', depth, e.message); }
     return null;
   }
 
-  // ══════════════════════════════════════════════════════════
-  //  DOM FALLBACK — Complete rewrite for Instagram Reels
-  // ══════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════════
+  //  DOM FALLBACK — complete multi-strategy scraper
+  //  Works on Posts, Reels, and Stories
+  // ════════════════════════════════════════════════════════
 
-  /** Best post container — tries modal first, then article, then full page */
-  function _root() {
+  function _postRoot() {
     return spmQ('div[role="dialog"] article')
         ?? spmQ('main article')
         ?? spmQ('article')
@@ -207,141 +285,78 @@ const SpmExtractor = (() => {
         ?? document;
   }
 
-  // ── FIX 1, 2, 3: Reels-aware stat scraping ──────────────
   function _igDomStats() {
     const result = { source: 'dom' };
-
     try {
-      // ════════════════════════════════════════
-      //  STRATEGY A — aria-label digit scan
-      //  Works for both Posts and Reels because
-      //  every action button has aria-label with
-      //  the count embedded, e.g.:
-      //    "35,282 likes. Like"
-      //    "193 comments"
-      //    "308"  (reposts/shares)
-      // ════════════════════════════════════════
-      const ariaEls = spmQA('[aria-label]');
-      for (const el of ariaEls) {
-        const lbl = (el.getAttribute('aria-label') ?? '').trim();
-        if (!lbl || !/\d/.test(lbl)) continue;
-
-        // Likes
-        if (!result.likes && /like/i.test(lbl)) {
-          result.likes = normalizeNumber(lbl.replace(/[^\d,]/g, '').split(',')[0] + lbl.match(/,\d+/g)?.join('') ?? lbl.match(/[\d,]+/)?.[0]);
-          // Re-parse properly
+      // ── LIKES ──────────────────────────────────────────
+      // S1: aria-label scan (most reliable for Reels)
+      for (const el of spmQA('[aria-label]')) {
+        const lbl = el.getAttribute('aria-label') ?? '';
+        if (/like/i.test(lbl) && /\d/.test(lbl)) {
           const m = lbl.match(/^([\d,]+)/);
-          if (m) result.likes = normalizeNumber(m[1]);
+          if (m) { result.likes = normalizeNumber(m[1]); break; }
         }
-        // Comments
-        if (!result.comments && /comment/i.test(lbl)) {
-          const m = lbl.match(/^([\d,]+)/);
-          if (m) result.comments = normalizeNumber(m[1]);
-        }
-        // Shares / reposts
-        if (!result.shares && /(share|repost|send)/i.test(lbl)) {
-          const m = lbl.match(/^([\d,]+)/);
-          if (m) result.shares = normalizeNumber(m[1]);
+      }
+      // S2: "Liked by X and N others" / "N likes"
+      if (!result.likes) {
+        for (const el of spmQA('span, a')) {
+          const t = (el.innerText ?? '').trim();
+          if (t.length > 60) continue;
+          const m1 = t.match(/[Ll]iked by .+ and ([\d,]+) others?/);
+          if (m1) { result.likes = normalizeNumber(m1[1]) + 1; break; }
+          const m2 = t.match(/^([\d,]+)\s+likes?$/i);
+          if (m2) { result.likes = normalizeNumber(m2[1]); break; }
         }
       }
 
-      // ════════════════════════════════════════
-      //  STRATEGY B — span text next to action icons
-      //  Instagram Reels vertical sidebar shows:
-      //    [SVG heart icon]
-      //    <span>35K</span>
-      //    [SVG comment icon]
-      //    <span>193</span>
-      //    [SVG repost icon]
-      //    <span>308</span>
-      //  We collect all standalone numeric spans in
-      //  the action area and assign them in order.
-      // ════════════════════════════════════════
-      if (!result.likes || !result.comments || !result.shares) {
-        // The action button container for Reels is a flex column
-        // Each button has an icon and a count span sibling
-        const actionAreas = spmQA('section, [class*="action"], [class*="Action"]');
-        for (const area of actionAreas) {
-          const numericSpans = spmQA('span, div', area).filter(el => {
-            const t = (el.innerText ?? '').trim();
-            return /^[\d,.]+[KkMmBb]?$/.test(t) && el.children.length === 0;
-          });
-          if (numericSpans.length >= 2) {
-            // Try to match by position: first = likes, second = comments, third = shares
-            if (!result.likes    && numericSpans[0]) result.likes    = normalizeNumber(numericSpans[0].innerText.trim());
-            if (!result.comments && numericSpans[1]) result.comments = normalizeNumber(numericSpans[1].innerText.trim());
-            if (!result.shares   && numericSpans[2]) result.shares   = normalizeNumber(numericSpans[2].innerText.trim());
+      // ── COMMENTS ───────────────────────────────────────
+      // S1: aria-label "N comments"
+      for (const el of spmQA('[aria-label]')) {
+        const lbl = el.getAttribute('aria-label') ?? '';
+        if (/comment/i.test(lbl) && /\d/.test(lbl)) {
+          const m = lbl.match(/^([\d,]+)/);
+          if (m) { result.comments = normalizeNumber(m[1]); break; }
+        }
+      }
+      // S2: "View all N comments" / "N comments"
+      if (!result.comments) {
+        for (const el of spmQA('span, a')) {
+          const t = (el.innerText ?? '').trim();
+          if (t.length > 60) continue;
+          const m1 = t.match(/[Vv]iew all ([\d,]+) comments?/);
+          if (m1) { result.comments = normalizeNumber(m1[1]); break; }
+          const m2 = t.match(/^([\d,]+)\s+comments?$/i);
+          if (m2) { result.comments = normalizeNumber(m2[1]); break; }
+        }
+      }
+
+      // ── SHARES ─────────────────────────────────────────
+      // S1: aria-label "N shares/reposts"
+      for (const el of spmQA('[aria-label]')) {
+        const lbl = el.getAttribute('aria-label') ?? '';
+        if (/(share|repost|send)/i.test(lbl) && /\d/.test(lbl)) {
+          const m = lbl.match(/^([\d,]+)/);
+          if (m) { result.shares = normalizeNumber(m[1]); break; }
+        }
+      }
+      // S2: Reel action panel — ordered numeric spans
+      if (!result.shares) {
+        for (const area of spmQA('section, [class*="action"]')) {
+          const nums = spmQA('span', area)
+            .filter(el => /^[\d,.]+[KkMmBb]?$/.test((el.innerText ?? '').trim()) && !el.children.length);
+          if (nums.length >= 3) {
+            if (!result.likes    && nums[0]) result.likes    = normalizeNumber(nums[0].innerText.trim());
+            if (!result.comments && nums[1]) result.comments = normalizeNumber(nums[1].innerText.trim());
+            if (!result.shares   && nums[2]) result.shares   = normalizeNumber(nums[2].innerText.trim());
             break;
           }
         }
       }
 
-      // ════════════════════════════════════════
-      //  STRATEGY C — text pattern scan
-      //  "1,001 likes" / "View all 193 comments"
-      // ════════════════════════════════════════
-      for (const el of spmQA('span, a, div')) {
-        const t = (el.innerText ?? '').trim();
-        if (t.length > 80) continue; // skip large containers
-
-        if (!result.likes) {
-          const m1 = t.match(/[Ll]iked by .+ and ([\d,]+) others?/);
-          if (m1) { result.likes = normalizeNumber(m1[1]) + 1; continue; }
-          const m2 = t.match(/^([\d,]+)\s+likes?$/i);
-          if (m2) { result.likes = normalizeNumber(m2[1]); continue; }
-        }
-        if (!result.comments) {
-          const m1 = t.match(/[Vv]iew all ([\d,]+) comments?/);
-          if (m1) { result.comments = normalizeNumber(m1[1]); continue; }
-          const m2 = t.match(/^([\d,]+)\s+comments?$/i);
-          if (m2) { result.comments = normalizeNumber(m2[1]); continue; }
-        }
-        if (!result.shares) {
-          const m = t.match(/^([\d,]+)\s+shares?$/i);
-          if (m) { result.shares = normalizeNumber(m[1]); continue; }
-        }
-      }
-
-      // ════════════════════════════════════════
-      //  STRATEGY D — SVG sibling scan
-      //  Each SVG action icon has a sibling/child
-      //  span with the count.
-      // ════════════════════════════════════════
-      if (!result.shares) {
-        // Try SVG elements whose aria-label or title contains "share"/"repost"
-        const shareSvgs = spmQA('svg[aria-label*="hare"], svg[aria-label*="epost"], svg[aria-label*="end"]');
-        for (const svg of shareSvgs) {
-          const parent = svg.closest('div, button, span') ?? svg.parentElement;
-          if (!parent) continue;
-          // Look up to 3 levels for a numeric sibling
-          let el = parent;
-          for (let i = 0; i < 4; i++) {
-            const spans = spmQA('span', el?.parentElement ?? el);
-            for (const sp of spans) {
-              const t = (sp.innerText ?? '').trim();
-              if (/^[\d,.]+[KkMmBb]?$/.test(t) && t !== '0') {
-                result.shares = normalizeNumber(t); break;
-              }
-            }
-            if (result.shares) break;
-            el = el?.parentElement;
-          }
-          if (result.shares) break;
-        }
-      }
-
-      // ════════════════════════════════════════
-      //  REACH / VIEWS — FIX 3
-      //  On Reels the view count can appear as:
-      //   • "308K views" plain text in overlay
-      //   • A number-only span (play counter)
-      //   • Inside a button aria-label
-      // ════════════════════════════════════════
+      // ── REACH / VIEWS ───────────────────────────────────
       const hasVideo = spmQA('video').length > 0;
-
       if (!hasVideo) {
-        result.reach = null;
-        result.reachIsNA = true;
+        result.reach = null; result.reachIsNA = true;
       } else {
         // S1: exact "N views" / "N plays" text
         for (const el of spmQA('span, div, strong')) {
@@ -350,17 +365,7 @@ const SpmExtractor = (() => {
           const m = t.match(/^([\d,.]+[KkMmBb]?)\s*(views?|plays?)$/i);
           if (m) { result.reach = normalizeNumber(m[1]); break; }
         }
-        // S2: aria-label with "view" + number
-        if (!result.reach) {
-          for (const el of ariaEls) {
-            const lbl = (el.getAttribute('aria-label') ?? '');
-            if (/view/i.test(lbl) && /\d/.test(lbl)) {
-              const m = lbl.match(/([\d,.]+[KkMmBb]?)\s*views?/i);
-              if (m) { result.reach = normalizeNumber(m[1]); break; }
-            }
-          }
-        }
-        // S3: number + "views" anywhere in page with small text budget
+        // S2: inline "N views" anywhere
         if (!result.reach) {
           for (const el of spmQA('span, div')) {
             const t = (el.innerText ?? '').trim();
@@ -369,9 +374,9 @@ const SpmExtractor = (() => {
             if (m) { result.reach = normalizeNumber(m[1]); break; }
           }
         }
-        // S4: video element aria-label
+        // S3: aria-label on video
         if (!result.reach) {
-          for (const vid of spmQA('video')) {
+          for (const vid of spmQA('video, [aria-label*="view"]')) {
             const lbl = vid.getAttribute('aria-label') ?? '';
             const m   = lbl.match(/([\d,.]+[KkMmBb]?)\s*views?/i);
             if (m) { result.reach = normalizeNumber(m[1]); break; }
@@ -379,28 +384,21 @@ const SpmExtractor = (() => {
         }
       }
 
-      // Caption + media
+      // ── META / MEDIA ────────────────────────────────────
       result.caption   = spmQ('meta[property="og:description"]')?.content ?? '';
       result.hashtags  = extractHashtags(result.caption);
       result.mentions  = extractMentions(result.caption);
       result.mediaUrls = _igDomMedia();
       result.mediaUrl  = result.mediaUrls[0] ?? '';
       result.isVideo   = hasVideo;
+      result.postId    = location.href.match(/\/(?:p|reel|tv)\/([^/?#]+)/)?.[1] ?? `dom_${Date.now()}`;
 
-      // FIX 6: ensure postId never empty for DOM-scraped data
-      result.postId = (
-        location.href.split('/p/')?.[1]?.split('/')?.[0] ??
-        location.href.split('/reel/')?.[1]?.split('/')?.[0] ??
-        location.href.split('/tv/')?.[1]?.split('/')?.[0] ??
-        String(Date.now())
-      );
-
-      spmLog.info('[Extractor DOM] likes:', result.likes,
+      spmLog.pipe('[Extractor DOM] likes:', result.likes,
         '| comments:', result.comments,
         '| shares:', result.shares,
         '| reach:', result.reach);
 
-    } catch (e) { spmLog.error('[Extractor] _igDomStats:', e); }
+    } catch (e) { spmLog.error('[Extractor] _igDomStats:', e.message); }
     return result;
   }
 
@@ -413,159 +411,94 @@ const SpmExtractor = (() => {
         .forEach(v => { const s = v.src ?? v.getAttribute('src'); if (s) u.add(s); });
       const og = spmQ('meta[property="og:image"]');
       if (og?.content) u.add(og.content);
-    } catch (e) { spmLog.error('[Extractor] _igDomMedia:', e); }
+    } catch (e) { spmLog.error('[Extractor] _igDomMedia:', e.message); }
     return [...u].filter(spmValidateUrl).slice(0, SPM.MAX_MEDIA);
   }
 
-  // ══════════════════════════════════════════════════════════
-  //  FIX 4 — Comments tab: complete rewrite for Reel layout
-  //  Instagram Reels do NOT use ul>li for comments.
-  //  They use div-based lists with role="listitem" or
-  //  comment containers identified by having a timestamp
-  //  and a Reply button.
-  // ══════════════════════════════════════════════════════════
+  // ── FIX #5 comments — 4-strategy DOM scraper ─────────────
   function _igDomComments() {
     const results = [];
     const seen    = SpmDedup(1000);
-
     try {
-      // ── STRATEGY 1: role="listitem" (Reels comment panel) ──
-      const listItems = spmQA('[role="listitem"]');
-      if (listItems.length > 0) {
-        spmLog.debug('[Comments] Strategy 1: role=listitem found', listItems.length);
-        listItems.forEach(item => _parseCommentElement(item, results, seen));
+      // S1: role="listitem" (Reels comment panel)
+      let containers = spmQA('[role="listitem"]');
+      // S2: ul > li (classic photo post)
+      if (!containers.length) containers = spmQA('ul > li').slice(1);
+      // S3: time element parent walk
+      if (!containers.length) {
+        spmQA('time').forEach(t => {
+          let el = t;
+          for (let i=0; i<5; i++) {
+            el = el?.parentElement; if (!el) break;
+            if (spmQA('a[href^="/"]', el).some(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''))) {
+              containers = [...containers, el]; break;
+            }
+          }
+        });
       }
-
-      // ── STRATEGY 2: Classic ul > li (photo post / dialog) ──
-      if (results.length === 0) {
-        const lis = spmQA('ul > li, ol > li');
-        spmLog.debug('[Comments] Strategy 2: ul>li found', lis.length);
-        // Skip first li (caption)
-        lis.slice(1).forEach(li => _parseCommentElement(li, results, seen));
-      }
-
-      // ── STRATEGY 3: Any container with a time element + link ──
-      // This catches any layout: look for elements that have
-      // a <time> or "Reply" sibling — these are always comment rows
-      if (results.length === 0) {
-        spmLog.debug('[Comments] Strategy 3: time+link scan');
-        const timeEls = spmQA('time');
-        timeEls.forEach(timeEl => {
-          // Walk up to find the comment container (usually 3-5 levels up)
-          let container = timeEl;
-          for (let i = 0; i < 5; i++) {
-            container = container?.parentElement;
-            if (!container) break;
-            // Check if this level has a username link
-            const userLink = spmQA('a[href^="/"]', container)
-              .find(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''));
-            if (userLink) {
-              _parseCommentElement(container, results, seen);
-              break;
+      // S4: Reply button parent walk
+      if (!containers.length) {
+        spmQA('button, span').filter(el => (el.innerText ?? '').trim() === 'Reply').forEach(btn => {
+          let el = btn;
+          for (let i=0; i<6; i++) {
+            el = el?.parentElement; if (!el) break;
+            if (spmQA('a[href^="/"]', el).some(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''))) {
+              containers = [...containers, el]; break;
             }
           }
         });
       }
 
-      // ── STRATEGY 4: Any div containing "Reply" button + user link ──
-      if (results.length === 0) {
-        spmLog.debug('[Comments] Strategy 4: Reply button scan');
-        const replyBtns = spmQA('button, span').filter(el =>
-          (el.innerText ?? '').trim() === 'Reply'
-        );
-        replyBtns.forEach(btn => {
-          let container = btn;
-          for (let i = 0; i < 6; i++) {
-            container = container?.parentElement;
-            if (!container) break;
-            const userLink = spmQA('a[href^="/"]', container)
-              .find(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''));
-            if (userLink) {
-              _parseCommentElement(container, results, seen);
-              break;
-            }
+      containers.forEach(c => {
+        try {
+          const userLink = spmQA('a[href^="/"]', c).find(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''));
+          const username = userLink?.innerText?.trim() ?? '?';
+          if (username === '?') return;
+          let text = (c.innerText ?? '').trim();
+          if (text.startsWith(username)) text = text.slice(username.length).trim();
+          text = text.replace(/\s*\d+[wdhms]\s*$/gi, '').replace(/\s*(Reply|Like|Translate)\s*$/gi, '').replace(/\s*[\d,]+\s*likes?\s*$/gi, '').trim();
+          if (!text || /^(Reply|View replies|Load more)/i.test(text)) return;
+          const key = username + ':' + text.slice(0, 40);
+          if (!seen.isNew(key)) return;
+          const timeEl = spmQ('time', c);
+          const likeM  = (c.innerText ?? '').match(/(\d+)\s*likes?/i);
+          if (results.length < SPM.MAX_COMMENTS) {
+            results.push({ id:null, username, text,
+              likes: likeM ? normalizeNumber(likeM[1]) : null,
+              ts: normalizeTimestamp(timeEl?.getAttribute('datetime') ?? null),
+              time: timeEl?.innerText?.trim() ?? '',
+              hashtags: extractHashtags(text), mentions: extractMentions(text),
+            });
           }
-        });
-      }
-
-    } catch (e) { spmLog.error('[Extractor] _igDomComments:', e); }
-
-    spmLog.info('[Extractor] Comments scraped from DOM:', results.length);
+        } catch (e) { spmLog.debug('[comment item]', e.message); }
+      });
+    } catch (e) { spmLog.error('[Extractor] _igDomComments:', e.message); }
+    spmLog.pipe('[Extractor DOM] Comments scraped:', results.length);
     return results;
   }
 
-  /** Parse a comment from any container element */
-  function _parseCommentElement(el, results, seen) {
-    try {
-      if (!el || results.length >= SPM.MAX_COMMENTS) return;
-
-      // Find username link (profile link pattern: /username/ or /username)
-      const userLink = spmQA('a[href^="/"]', el)
-        .find(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''));
-      const username = userLink?.innerText?.trim() ?? '?';
-      if (username === '?') return; // no username = not a comment
-
-      // Get all text, strip username prefix and trailing actions
-      let fullText = (el.innerText ?? '').trim();
-
-      // Remove username from start
-      if (fullText.startsWith(username)) {
-        fullText = fullText.slice(username.length).trim();
-      }
-
-      // Remove trailing time + action words (Reply, Like, N likes, etc.)
-      fullText = fullText
-        .replace(/\s*\d+[wdhms]\s*$/gi, '')           // time like "3m", "2w"
-        .replace(/\s*(Reply|Like|Translate|See translation)\s*$/gi, '')
-        .replace(/\s*[\d,]+\s*likes?\s*$/gi, '')
-        .trim();
-
-      if (!fullText || fullText.length < 1) return;
-      if (/^(Reply|View replies|Load more|Translate|See)/i.test(fullText)) return;
-
-      const key = username + ':' + fullText.slice(0, 40);
-      if (!seen.isNew(key)) return;
-
-      const timeEl  = spmQ('time', el);
-      const likeM   = (el.innerText ?? '').match(/(\d+)\s*likes?/i);
-
-      results.push({
-        id:       null,
-        username,
-        text:     fullText,
-        likes:    likeM ? normalizeNumber(likeM[1]) : null,
-        ts:       normalizeTimestamp(timeEl?.getAttribute('datetime') ?? null),
-        time:     timeEl?.innerText?.trim() ?? '',
-        hashtags: extractHashtags(fullText),
-        mentions: extractMentions(fullText),
-      });
-    } catch (e) { spmLog.debug('[parseCommentElement] error:', e); }
-  }
-
-  // ══════════════════════════════════════════════════════════
-  //  FIX 5 — Profile: ONLY grab post author, not commenter
-  //  The previous version grabbed any profile card on the page.
-  //  Now we specifically target the post author from:
-  //    1. API cache (most reliable)
-  //    2. Reel header username link (below the video)
-  //    3. Post modal header
-  //    4. og:title / page title (last resort)
-  //  NEVER from comment author cards
-  // ══════════════════════════════════════════════════════════
+  // ── Profile: post author only, never commenter ────────────
   function profile() {
     try {
-      // 1. API cache is always accurate
       if (_latestProfile) return _latestProfile;
-
       const p = {};
 
-      // 2. Try to get post author username from Reel overlay / post header
-      // Reel overlay: the username appears as a link in the bottom section
-      // of the video, OR in a dedicated "header" section of the post dialog
-      const postAuthorUsername = _getPostAuthorUsername();
-      if (postAuthorUsername) p.username = postAuthorUsername;
+      // From og:title (always the post author)
+      const ogTitle = spmQ('meta[property="og:title"]')?.content ?? '';
+      const tm = ogTitle.match(/^(.+?)\s+(?:on Instagram|•)/i) ?? ogTitle.match(/^@?([A-Za-z0-9._]+)/);
+      if (tm?.[1]) p.username = tm[1].replace(/^@/, '');
 
-      // 3. Profile stats from meta (most reliable for follower counts)
+      // From post article header (not comment section)
+      const postArea = spmQ('div[role="dialog"] article, main article, article') ?? document;
+      if (!p.username) {
+        const hdr = spmQ('header', postArea);
+        if (hdr) {
+          const link = spmQA('a[href^="/"]', hdr).find(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''));
+          if (link?.innerText?.trim()) p.username = link.innerText.trim();
+        }
+      }
+
+      // Follower counts from meta description
       const desc = spmQ('meta[name="description"]')?.content ?? '';
       const mF = desc.match(/([\d,KkMm.]+)\s*Followers/i);
       const mG = desc.match(/([\d,KkMm.]+)\s*Following/i);
@@ -574,96 +507,35 @@ const SpmExtractor = (() => {
       if (mG) p.following = normalizeNumber(mG[1]);
       if (mP) p.posts     = normalizeNumber(mP[1]);
 
-      // 4. Name + avatar from page title or og tags
-      // og:title is typically "username on Instagram: caption"
-      const ogTitle = spmQ('meta[property="og:title"]')?.content ?? '';
-      if (ogTitle && !p.name) {
-        const titleM = ogTitle.match(/^(.+?)\s+(?:on Instagram|•)/i);
-        if (titleM) p.name = titleM[1].trim();
-      }
-      if (!p.name) {
-        const pageTitle = document.title;
-        const titleM = pageTitle.match(/^(.+?)\s*[•(|@-]/);
-        if (titleM) p.name = titleM[1].trim();
-      }
+      // Name from page title
+      const pageTitle = document.title;
+      const titleM = pageTitle.match(/^(.+?)\s*[•(|@-]/);
+      if (titleM && !p.name) p.name = titleM[1].trim();
 
-      // 5. Avatar — only from the post header, NOT comment cards
-      //    The post header is the first <header> or [class*="header"] inside
-      //    the post dialog/article
-      const postArea  = spmQ('div[role="dialog"] article, main article, article') ?? document;
+      // Avatar from post header only
       const headerImg = spmQ('header img[alt*="profile picture"], header img', postArea);
       if (headerImg?.src && spmValidateUrl(headerImg.src)) p.avatarSrc = headerImg.src;
 
-      // 6. Bio from og:description (not from DOM, avoids comment text)
       p.bio = (spmQ('meta[property="og:description"]')?.content ?? '').slice(0, 300);
-
-      spmLog.info('[Extractor] Profile DOM:', p.username, 'followers:', p.followers);
+      spmLog.pipe('[Extractor] Profile (DOM):', p.username, 'followers:', p.followers);
       return p;
-    } catch (e) { spmLog.error('[Extractor] profile:', e); return {}; }
+    } catch (e) { spmLog.error('[Extractor] profile:', e.message); return {}; }
   }
 
-  /**
-   * _getPostAuthorUsername()
-   *
-   * Finds the POST AUTHOR's username without confusing it with
-   * commenters. Looks in specific places only.
-   */
-  function _getPostAuthorUsername() {
-    try {
-      // Post modal header: the very first user link in the article/dialog header
-      const postArea = spmQ('div[role="dialog"] article, main article, article');
-      if (postArea) {
-        // The header section of the post (not the comments section)
-        const header = spmQ('header', postArea) ?? spmQ('[class*="header"]', postArea);
-        if (header) {
-          const link = spmQA('a[href^="/"]', header)
-            .find(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''));
-          if (link?.innerText?.trim()) return link.innerText.trim();
-        }
-
-        // Fallback: first user link in the article that points to a simple /username/ path
-        // (not /username/tagged/, /username/followers/ etc.)
-        const firstLink = spmQA('a[href^="/"]', postArea)
-          .find(a => /^\/[^/]+\/?$/.test(a.getAttribute('href') ?? ''));
-        if (firstLink?.innerText?.trim()) return firstLink.innerText.trim();
-      }
-
-      // For Reels in feed: username is in the overlay at bottom-left
-      // og:title: "username • Original audio" or "username on Instagram"
-      const ogTitle = spmQ('meta[property="og:title"]')?.content ?? '';
-      const m = ogTitle.match(/^([A-Za-z0-9._]+)\s*(?:on Instagram|•|–)/i)
-             ?? ogTitle.match(/^@?([A-Za-z0-9._]+)/);
-      if (m?.[1]) return m[1].replace(/^@/, '');
-
-      return null;
-    } catch (e) { spmLog.debug('[_getPostAuthorUsername]', e); return null; }
-  }
-
-  // ── Facebook DOM (unchanged) ──────────────────────────────
-  function _fbDomStats() {
-    const base = { platform: 'facebook', url: location.href, ts: Date.now(), source: 'dom', hashtags: [], mentions: [], mediaUrls: [], postId: String(Date.now()) };
-    try {
-      const r = spmQ('[role="main"]') ?? document;
-      const result = {};
-      for (const el of spmQA('[aria-label]', r)) {
-        const lbl = el.getAttribute('aria-label') ?? '';
-        if (/\d/.test(lbl) && /react/i.test(lbl)   && !result.likes)    result.likes    = normalizeNumber(lbl.match(/[\d,]+/)?.[0]);
-        if (/\d/.test(lbl) && /comment/i.test(lbl)  && !result.comments) result.comments = normalizeNumber(lbl.match(/[\d,]+/)?.[0]);
-        if (/\d/.test(lbl) && /share/i.test(lbl)    && !result.shares)   result.shares   = normalizeNumber(lbl.match(/[\d,]+/)?.[0]);
-      }
-      return { ...base, ...result };
-    } catch (e) { spmLog.error('[Extractor] _fbDomStats:', e); return base; }
-  }
-
-  // ── Public stats() — API wins, DOM fills gaps ─────────────
+  // ── Public stats() — merge API + DOM ─────────────────────
   function stats() {
-    // FIX 6: wrap in try/catch, never throw
-    const base = { platform: SPM.PLATFORM, url: location.href, ts: Date.now(),
-      postId: String(Date.now()), hashtags: [], mentions: [], mediaUrls: [] };
+    const base = {
+      platform: SPM.PLATFORM, url: location.href, ts: Date.now(),
+      postId: location.href.match(/\/(?:p|reel|tv)\/([^/?#]+)/)?.[1] ?? `dom_${Date.now()}`,
+      hashtags: [], mentions: [], mediaUrls: [],
+    };
     try {
       if (!SPM.IS_IG) return _fbDomStats();
+
       const dom = _igDomStats();
+
       if (_latestPost) {
+        // API data is primary, DOM fills any nulls
         return {
           ...base,
           ...(_latestPost),
@@ -676,17 +548,33 @@ const SpmExtractor = (() => {
           source:   'api',
         };
       }
+
       return { ...base, ...dom };
-    } catch (e) { spmLog.error('[Extractor] stats:', e); return base; }
+    } catch (e) { spmLog.error('[Extractor] stats:', e.message); return base; }
   }
 
   function comments(postId) {
-    // FIX 4: return API cache first, then call fixed DOM scraper
     try {
       if (postId && _commentCache.has(postId)) return _commentCache.get(postId);
       if (_latestPost?.postId && _commentCache.has(_latestPost.postId)) return _commentCache.get(_latestPost.postId);
       return _igDomComments();
-    } catch (e) { spmLog.error('[Extractor] comments:', e); return []; }
+    } catch (e) { spmLog.error('[Extractor] comments:', e.message); return []; }
+  }
+
+  function _fbDomStats() {
+    const base = { platform:'facebook', url:location.href, ts:Date.now(), source:'dom',
+      hashtags:[], mentions:[], mediaUrls:[], postId:`dom_${Date.now()}` };
+    try {
+      const r = spmQ('[role="main"]') ?? document;
+      const result = {};
+      for (const el of spmQA('[aria-label]', r)) {
+        const lbl = el.getAttribute('aria-label') ?? '';
+        if (/\d/.test(lbl) && /react/i.test(lbl)   && !result.likes)    result.likes    = normalizeNumber(lbl.match(/[\d,]+/)?.[0]);
+        if (/\d/.test(lbl) && /comment/i.test(lbl)  && !result.comments) result.comments = normalizeNumber(lbl.match(/[\d,]+/)?.[0]);
+        if (/\d/.test(lbl) && /share/i.test(lbl)    && !result.shares)   result.shares   = normalizeNumber(lbl.match(/[\d,]+/)?.[0]);
+      }
+      return { ...base, ...result };
+    } catch (e) { spmLog.error('[Extractor] _fbDomStats:', e.message); return base; }
   }
 
   function profileGridMedia() {
@@ -695,24 +583,27 @@ const SpmExtractor = (() => {
       spmQA('article img, main img, [role="main"] img')
         .forEach(img => { if ((img.naturalWidth ?? img.width) > 150) u.add(img.src); });
       spmQA('video[poster]').forEach(v => { if (v.poster) u.add(v.poster); });
-    } catch (e) { spmLog.error('[Extractor] profileGridMedia:', e); }
+    } catch (e) { spmLog.error('[Extractor] profileGridMedia:', e.message); }
     return [...u].filter(spmValidateUrl).slice(0, 100);
   }
 
   function resetCache() {
-    _postCache.clear(); _profileCache.clear(); _commentCache.clear(); _apiDedup.clear();
+    _postCache.clear(); _profileCache.clear(); _commentCache.clear(); _seenPosts.clear();
     _latestPost = null; _latestProfile = null;
-    spmLog.info('[Extractor] Cache reset');
+    spmLog.pipe('[Extractor] Cache reset');
   }
 
   return {
-    extractPostData,
-    processApiPayload,
-    stats, profile, comments, profileGridMedia, resetCache,
-    getPostCache:    () => _postCache,
-    getProfileCache: () => _profileCache,
-    getLatestPost:   () => _latestPost,
-    hasApiData:      () => _latestPost !== null,
+    extractPostData,      // raw API JSON → PostData | null
+    processApiPayload,    // rate-limited + error-boundary wrapper
+    stats,                // merged API+DOM stats
+    profile,              // post author profile
+    comments,             // comments from API cache or DOM
+    profileGridMedia,
+    resetCache,
+    getLatestPost:    () => _latestPost,
+    getLatestProfile: () => _latestProfile,
+    hasApiData:       () => _latestPost !== null,
   };
 
 })();
