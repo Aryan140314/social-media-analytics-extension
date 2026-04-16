@@ -1,27 +1,18 @@
 {
   "manifest_version": 3,
   "name": "Social Post Monitor Pro",
-  "version": "8.0.0",
-  "description": "SPM Pro v8 — Bulletproof pipeline: interceptor injection, message validation, null safety, NaN prevention.",
-
+  "version": "9.0.0",
+  "description": "SPM Pro v9 — Production-stable pipeline: correct postMessage, 8 GraphQL shapes, NaN-free analytics.",
   "permissions": ["storage", "downloads", "notifications"],
   "optional_permissions": ["tabs"],
-
   "host_permissions": [
     "https://www.facebook.com/*",
     "https://www.instagram.com/*"
   ],
-
-  "background": {
-    "service_worker": "background.js"
-  },
-
+  "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
-      "matches": [
-        "https://www.facebook.com/*",
-        "https://www.instagram.com/*"
-      ],
+      "matches": ["https://www.facebook.com/*", "https://www.instagram.com/*"],
       "js": [
         "content/utils.js",
         "content/extractor.js",
@@ -34,23 +25,12 @@
       "world": "ISOLATED"
     }
   ],
-
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Social Post Monitor Pro",
-    "default_icon": {
-      "16":  "icons/icon16.png",
-      "48":  "icons/icon48.png",
-      "128": "icons/icon128.png"
-    }
+    "default_title": "SPM Pro",
+    "default_icon": {"16":"icons/icon16.png","48":"icons/icon48.png","128":"icons/icon128.png"}
   },
-
-  "icons": {
-    "16":  "icons/icon16.png",
-    "48":  "icons/icon48.png",
-    "128": "icons/icon128.png"
-  },
-
+  "icons": {"16":"icons/icon16.png","48":"icons/icon48.png","128":"icons/icon128.png"},
   "web_accessible_resources": [
     {
       "resources": [

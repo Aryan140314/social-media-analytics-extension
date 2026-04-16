@@ -324,7 +324,7 @@ const _scrape = spmDebounce(async function(showLoader=false) {
     let report = null;
     try {
       const prof = SpmExtractor.getLatestProfile() ?? {};
-      report = SpmAnalytics.buildReport(fresh, _ui.history, prof, SpmExtractor.comments(fresh.postId) ?? []);
+      report = SpmAnalytics.buildReport(fresh, _ui.history, prof, SpmExtractor.getComments(fresh.postId) ?? []);
     } catch (e) { spmLog.warn('[UI] analytics in scrape:', e.message); }
 
     _ui.report = report;
@@ -473,7 +473,7 @@ async function _loadComments() {
   _setStatus('Loading comments…', 'idle', false);
   try {
     await new Promise(r => setTimeout(r, 80));
-    _ui.comments = SpmExtractor.comments(_ui.current?.postId);
+    _ui.comments = SpmExtractor.getComments(_ui.current?.postId);
     _renderCommentList(_ui.comments);
     const ct = spmElFresh('comment-count');
     if (ct) ct.textContent = `${_ui.comments.length} comment${_ui.comments.length!==1?'s':''} found`;

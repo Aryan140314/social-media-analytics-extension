@@ -1,28 +1,27 @@
-# Social Media Analytics Extension (v8)
+# Social Media Analytics Extension (v8 - Updated)
 
 ## 📌 Overview
 
-Version 8 is a stabilized and production-ready version of the Social Media Analytics Extension. It focuses on reliability, robust data extraction, improved error handling, and a consistent analytics pipeline.
+Version 8 (Updated) focuses on stabilizing the analytics pipeline, improving error handling, and ensuring consistent data extraction from Instagram API responses.
 
-The extension captures Instagram API responses, processes structured data, and provides real-time analytics through a modular architecture.
+This version resolves previous issues related to unreliable data flow, UI crashes, and inconsistent extraction, making the extension significantly more stable and usable.
 
 ---
 
 ## 🚀 Features
 
-| Feature                      | Description                                        |
-| ---------------------------- | -------------------------------------------------- |
-| Advanced API Interception    | Intercepts fetch and XMLHttpRequest calls          |
-| Multi-Format Data Extraction | Handles multiple Instagram API response structures |
-| Modular Pipeline             | interceptor → monitor → extractor → analytics → UI |
-| Robust Error Handling        | Prevents crashes and ensures stable execution      |
-| Data Normalization           | Converts raw API data into structured format       |
-| Deduplication System         | Avoids duplicate processing                        |
-| Caching Layer                | Improves performance                               |
-| Real-Time Monitoring         | Tracks engagement changes dynamically              |
-| Analytics Engine             | Engagement rate, growth rate, trend detection      |
-| UI Stability Improvements    | Prevents null rendering and crashes                |
-| CSV Export                   | Export analytics data                              |
+| Feature                  | Description                                            |
+| ------------------------ | ------------------------------------------------------ |
+| API Interception         | Captures fetch and XMLHttpRequest calls from Instagram |
+| GraphQL Data Extraction  | Extracts structured data from API responses            |
+| Stabilized Data Pipeline | interceptor → monitor → extractor → analytics → UI     |
+| Improved Error Handling  | Prevents crashes and logs errors safely                |
+| Multi-Format Extraction  | Handles multiple API response structures               |
+| Data Normalization       | Converts raw data into usable format                   |
+| Deduplication System     | Prevents duplicate processing                          |
+| Real-Time Monitoring     | Tracks engagement changes dynamically                  |
+| Analytics Engine         | Calculates engagement rate and basic insights          |
+| UI Stability Fixes       | Prevents null rendering and broken UI states           |
 
 ---
 
@@ -57,29 +56,28 @@ Select the project folder
 ## ▶️ How to Use
 
 1. Open Instagram
-2. Navigate to a post
-3. Extension automatically:
+2. Navigate to any post
+3. The extension automatically:
 
    * Intercepts API requests
    * Extracts structured data
-4. Open extension sidebar
+4. Open the extension sidebar
 5. View:
 
    * Likes
    * Comments
    * Engagement rate
    * Media URLs
-6. Enable monitoring for real-time updates
-7. Export data using CSV option
+6. Monitor updates in real time
 
 ---
 
 ## ⚠️ Limitations
 
-* Depends on Instagram API (subject to change)
-* Requires login for full data access
-* Some endpoints may not always respond
-* Cached requests may not be captured
+* Depends on Instagram API structure (may change)
+* Some data requires login session
+* Not all metrics are publicly available
+* Cached API responses may not always be captured
 
 ---
 
@@ -90,9 +88,9 @@ manifest.json
 background.js
 content/
   interceptor.js
+  monitor.js
   extractor.js
   analytics.js
-  monitor.js
   utils.js
   ui.js
   sidebar.css
@@ -104,19 +102,19 @@ icons/
 
 ---
 
-## 📈 Improvements Over v7
+## 📈 Improvements Over Previous v8
 
-* Fixed pipeline instability issues
-* Improved extractor robustness (multi-format support)
-* Added null safety and error guards
-* Better UI handling for missing data
-* Reduced crashes and console errors
+* Fixed pipeline break issues
+* Improved extractor reliability (multi-format support)
+* Added null safety across modules
+* Prevented UI crashes on missing data
+* Improved overall stability and consistency
 
 ---
 
 ## 💡 Future Scope
 
+* Advanced analytics (growth trends, viral detection)
+* Backend integration (Python / FastAPI)
+* Data visualization dashboard
 * AI-based insights
-* Trend prediction
-* Backend integration (Python/FastAPI)
-* Advanced visualization dashboard

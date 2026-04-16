@@ -1,145 +1,140 @@
 /**
- * SPM Pro v8 · content/interceptor.js
- * ─────────────────────────────────────────────────────────────
- * Execution context : MAIN world (injected via <script src>)
- * Responsibility    : Patch fetch + XHR, parse GraphQL JSON,
- *                     relay to ISOLATED world via postMessage.
+ * SPM Pro v9 · content/interceptor.js
  *
- * BUG FIXES:
- *  #1  Injected via chrome.runtime.getURL  (not inline script)
- *  #2  Patches BOTH fetch AND XMLHttpRequest
- *  #3  Uses window.postMessage to send to monitor.js
- *  #4  response.clone() used correctly — never consumes original
- *  #11 All async paths wrapped in try/catch
+ * Runs in MAIN world — injected via <script src> from monitor.js.
+ * Patches window.fetch + XMLHttpRequest.
+ * Forwards parsed GraphQL JSON to ISOLATED world via postMessage.
+ *
+ * Requirements addressed:
+ *  R1  – Duplicate injection guard
+ *  R1  – Patches both fetch AND XHR
+ *  R1  – Filters only /graphql/ and /api/v1/ endpoints
+ *  R2  – Sends { type: "IG_API_RESPONSE", payload } via postMessage
+ *  R7  – try/catch in every code path
+ *  R8  – DEBUG flag and per-stage logging
  */
 
 (function () {
   'use strict';
 
-  // ── Guard: inject once ──────────────────────────────────
-  if (window.__SPM_INTERCEPTOR_V8) return;
-  window.__SPM_INTERCEPTOR_V8 = true;
+  /* ─────────────────────────────────────────────────────────
+   * 0. Guard — run once per page context
+   * ───────────────────────────────────────────────────────── */
+  if (window.__SPM_V9) return;
+  window.__SPM_V9 = true;
 
-  // ── Config ──────────────────────────────────────────────
-  const DEBUG           = true;
-  const POST_MSG_TYPE   = 'SPM_API_DATA';
-  // Endpoints worth intercepting
-  const ENDPOINT_RE     = /graphql|\/api\/v[12]\//i;
+  /* ─────────────────────────────────────────────────────────
+   * 1. Config
+   * ───────────────────────────────────────────────────────── */
+  const DEBUG        = true;
+  const MSG_TYPE     = 'IG_API_RESPONSE';           // R2 — must match monitor.js
+  const ENDPOINT_RE  = /graphql|\/api\/v1\//i;      // R1 — filter relevant calls
 
-  // ── Logger ──────────────────────────────────────────────
+  /* ─────────────────────────────────────────────────────────
+   * 2. Logger
+   * ───────────────────────────────────────────────────────── */
   const log = {
-    info:  (...a) => DEBUG && console.info( '[SPM Interceptor]', ...a),
-    warn:  (...a) =>           console.warn( '[SPM Interceptor WARN]', ...a),
-    error: (...a) =>           console.error('[SPM Interceptor ERROR]', ...a),
+    info : (...a) => DEBUG && console.info ('[SPM:interceptor]', ...a),
+    warn : (...a) =>           console.warn ('[SPM:interceptor]', ...a),
+    error: (...a) =>           console.error('[SPM:interceptor]', ...a),
   };
 
-  // ── Rolling dedup — prevents same payload firing twice ──
-  // FIX #7: key = content hash (length + first 32 chars), NOT url
+  /* ─────────────────────────────────────────────────────────
+   * 3. Deduplication — R6: key on content, NOT on URL
+   *    Uses first 64 chars of body + length as a fast hash.
+   * ───────────────────────────────────────────────────────── */
   const _seen = new Set();
+
   function _isNew(text) {
-    const key = text.length + ':' + text.slice(0, 32);
+    const key = `${text.length}:${text.slice(0, 64)}`;
     if (_seen.has(key)) return false;
     _seen.add(key);
-    if (_seen.size > 400) {
-      const evict = [..._seen].slice(0, 100);
-      evict.forEach(k => _seen.delete(k));
+    if (_seen.size > 300) {
+      const stale = [..._seen].slice(0, 75);
+      stale.forEach(k => _seen.delete(k));
     }
     return true;
   }
 
-  // ── Relay payload to ISOLATED world ─────────────────────
-  // FIX #3: use window.postMessage (NOT chrome.runtime.sendMessage)
-  function _relay(json) {
+  /* ─────────────────────────────────────────────────────────
+   * 4. Parse + emit
+   * ───────────────────────────────────────────────────────── */
+  function _emit(json) {
+    // R2 — window.postMessage to reach monitor.js in ISOLATED world
     try {
-      window.postMessage({ type: POST_MSG_TYPE, payload: json }, window.location.origin || '*');
-      log.info('Relayed payload, keys:', Object.keys(json).slice(0, 5));
+      window.postMessage({ type: MSG_TYPE, payload: json }, '*');
+      log.info('Emitted payload, top-level keys:', Object.keys(json).slice(0, 6));
     } catch (e) {
-      log.error('postMessage relay failed:', e.message);
+      log.error('postMessage failed:', e.message);
     }
   }
 
-  // ── Parse raw text body ──────────────────────────────────
-  // FIX #11: wrapped in try/catch, handles non-JSON silently
-  function _processBody(text, url) {
-    if (!text || text.length < 10) return;
+  function _process(text, url) {
+    // R7 — try/catch so a bad response never crashes the interceptor
     try {
-      const json = JSON.parse(text);
+      if (!text || text.length < 10) return;
+      const json = JSON.parse(text);      // throws if not JSON → caught below
       if (!_isNew(text)) {
-        log.info('Dedup: skipping already-seen payload from', url.split('?')[0]);
+        log.info('Dedup skip for', url.split('?')[0].slice(-60));
         return;
       }
-      log.info('New payload from', url.split('?')[0].slice(-50));
-      _relay(json);
+      log.info('New payload from', url.split('?')[0].slice(-60));
+      _emit(json);
     } catch {
-      // Non-JSON response (HTML, plain text) — ignore silently
+      // Not JSON — silently ignore (HTML pages, CSS, plain text)
     }
   }
 
-  // ═══════════════════════════════════════════════════════
-  //  PATCH 1 — window.fetch
-  //  FIX #4: use response.clone() so page still gets body
-  // ═══════════════════════════════════════════════════════
-  const _OrigFetch = window.fetch;
+  /* ─────────────────────────────────────────────────────────
+   * 5. Patch window.fetch
+   *    R1 — response.clone() so the page body is untouched
+   * ───────────────────────────────────────────────────────── */
+  const _origFetch = window.fetch;
 
   window.fetch = async function (...args) {
-    // ALWAYS execute original fetch first — never block page
-    let response;
-    try {
-      response = await _OrigFetch.apply(this, args);
-    } catch (networkError) {
-      // Network failure — re-throw as normal, don't interfere
-      throw networkError;
-    }
+    // Always execute the real fetch first — never delay the page
+    const response = await _origFetch.apply(this, args);
 
     try {
       const url = typeof args[0] === 'string' ? args[0]
-        : args[0] instanceof URL              ? args[0].href
-        : args[0]?.url                        ?? '';
+        : args[0] instanceof URL             ? args[0].href
+        : (args[0]?.url ?? '');
 
       if (ENDPOINT_RE.test(url)) {
-        // Clone BEFORE reading — page gets the original body
-        // FIX #4: response.clone() used correctly
-        const clone = response.clone();
-        clone.text()
-          .then(text => _processBody(text, url))
-          .catch(e  => log.warn('clone().text() failed:', e.message));
+        // Clone before reading — page still gets the original body stream
+        response.clone().text()
+          .then(text => _process(text, url))
+          .catch(e    => log.warn('clone().text() error:', e.message));
       }
     } catch (e) {
-      log.error('fetch hook wrapper error:', e.message);
+      log.error('fetch wrapper error:', e.message);
     }
 
-    return response; // always return original, untouched
+    return response;                        // always return original
   };
 
-  log.info('fetch patched ✓');
+  /* ─────────────────────────────────────────────────────────
+   * 6. Patch XMLHttpRequest
+   * ───────────────────────────────────────────────────────── */
+  const _proto    = XMLHttpRequest.prototype;
+  const _origOpen = _proto.open;
+  const _origSend = _proto.send;
 
-  // ═══════════════════════════════════════════════════════
-  //  PATCH 2 — XMLHttpRequest
-  // ═══════════════════════════════════════════════════════
-  const _XHRProto = XMLHttpRequest.prototype;
-  const _origOpen = _XHRProto.open;
-  const _origSend = _XHRProto.send;
-
-  _XHRProto.open = function (method, url, ...rest) {
-    // Store URL on instance for use in load handler
-    this._spm_url = typeof url === 'string' ? url : String(url ?? '');
+  _proto.open = function (method, url, ...rest) {
+    this._spm_url = String(url ?? '');
     return _origOpen.apply(this, [method, url, ...rest]);
   };
 
-  _XHRProto.send = function (...args) {
+  _proto.send = function (...args) {
     if (ENDPOINT_RE.test(this._spm_url ?? '')) {
       this.addEventListener('load', function () {
-        try {
-          _processBody(this.responseText, this._spm_url);
-        } catch (e) {
-          log.error('XHR load handler error:', e.message);
-        }
+        try { _process(this.responseText, this._spm_url); }
+        catch (e) { log.error('XHR load handler:', e.message); }
       });
     }
-    return _origSend.apply(this, args); // unmodified
+    return _origSend.apply(this, args);     // always call original
   };
 
-  log.info('XHR patched ✓');
-  log.info('Interceptor v8 active — watching:', ENDPOINT_RE.source);
+  log.info('v9 active — fetch ✓  XHR ✓  filter:', ENDPOINT_RE.source);
 
 })();
