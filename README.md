@@ -78,6 +78,7 @@ Select the project folder
 * Some data requires login session
 * Not all metrics are publicly available
 * Cached API responses may not always be captured
+*  some error in like share and comment section "Later verion will fix "
 
 ---
 
@@ -117,4 +118,4 @@ icons/
 * Advanced analytics (growth trends, viral detection)
 * Backend integration (Python / FastAPI)
 * Data visualization dashboard
-* AI-based insights
+
