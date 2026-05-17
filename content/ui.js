@@ -1,700 +1,533 @@
-/**
- * SPM Pro v8 · content/ui.js
- * ─────────────────────────────────────────────────────────────
- * Sidebar UI — driven by monitor events.
- *
- * BUG FIXES:
- *  #10 Every render function checks for null before touching DOM
- *  #9  try/catch on all event handlers
- *  #6  Falls back to "—" (not crash) for any missing value
- */
+/* ============================================================
+   ui.js — DevTools-style right sidebar, 6 tabs
+   v10 — fixes: debounce losing showLoader arg,
+         event listener cleanup on re-init,
+         SVG charts guard for <2 data points,
+         system dark/light mode change listener,
+         scrape button explicit immediate call
+   ============================================================ */
+
 'use strict';
 
-if (document.getElementById('spm-root')) {
-  spmLog.warn('[UI] Already injected — skipping');
-} else {
+(function () {
+  const _TAB_IDS = ['stats', 'comments', 'profile', 'analytics', 'downloads', 'settings'];
+  let _sidebar   = null;
+  let _activeTab = 'stats';
+  let _darkMode  = false;
+  let _initialized = false;
 
-const _ui = {
-  open:       false,
-  activeTab:  'stats',
-  settings:   { theme:'light', notifications:true, autosave:true },
-  current:    null,   // FIX #10: starts null, not {}
-  profile:    {},
-  comments:   [],
-  mediaUrls:  [],
-  history:    [],
-  report:     null,
-};
+  // ── Build sidebar DOM ─────────────────────────────────────────
+  function _buildSidebar() {
+    if (_sidebar) { _sidebar.remove(); _sidebar = null; }
 
-// ── Load persisted settings ──────────────────────────────────
-async function _loadState() {
-  try {
-    const r = await spmGet(['spm_settings']);
-    if (r.spm_settings) Object.assign(_ui.settings, r.spm_settings);
-    _ui.history = await SpmMonitor.getHistory();
-    _applyTheme();
-    const t = spmEl('theme-toggle');    if (t) t.checked = _ui.settings.theme === 'dark';
-    const n = spmEl('notif-toggle');    if (n) n.checked = _ui.settings.notifications !== false;
-    const a = spmEl('autosave-toggle'); if (a) a.checked = _ui.settings.autosave !== false;
-  } catch (e) { spmLog.error('[UI] _loadState:', e.message); }
-}
-
-// ── Build sidebar DOM ────────────────────────────────────────
-function _build() {
-  const root = document.createElement('div');
-  root.id    = 'spm-root';
-  root.innerHTML = `
-    <div id="spm-resize-handle"></div>
-    <div id="spm-sidebar">
+    _sidebar = document.createElement('div');
+    _sidebar.id = 'spm-sidebar';
+    _sidebar.innerHTML = `
       <div id="spm-header">
-        <span id="spm-logo">📊 SPM Pro</span>
-        <span id="spm-platform-badge">${SPM.PLATFORM}</span>
-        <span id="spm-source-badge" class="spm-src-dom" title="Data source">DOM</span>
-        <span id="spm-monitor-dot" title="Auto-monitor"></span>
-        <button id="spm-close-btn" aria-label="Close">✕</button>
+        <span id="spm-title">📊 SPM v${SPM.VERSION}</span>
+        <span id="spm-status" class="spm-status">Waiting…</span>
+        <button id="spm-close" title="Close">✕</button>
       </div>
-      <nav id="spm-tabs" role="tablist">
-        <button class="spm-tab active" data-tab="stats"    ><span>📊</span>Stats</button>
-        <button class="spm-tab"        data-tab="comments" ><span>💬</span>Comments</button>
-        <button class="spm-tab"        data-tab="profile"  ><span>👤</span>Profile</button>
-        <button class="spm-tab"        data-tab="analytics"><span>📈</span>Analytics</button>
-        <button class="spm-tab"        data-tab="downloads"><span>⬇️</span>Downloads</button>
-        <button class="spm-tab"        data-tab="settings" ><span>⚙️</span>Settings</button>
-      </nav>
-      <div id="spm-content">${_tStats()}${_tComments()}${_tProfile()}${_tAnalytics()}${_tDownloads()}${_tSettings()}</div>
-      <footer id="spm-statusbar">
-        <span class="spm-dot" id="spm-dot"></span>
-        <span id="spm-status-text">Ready</span>
-        <span id="spm-last-update"></span>
-      </footer>
-    </div>`;
-  document.body.appendChild(root);
-
-  const fab   = document.createElement('button');
-  fab.id      = 'spm-fab';
-  fab.title   = 'Social Post Monitor Pro';
-  fab.innerText = '📊';
-  document.body.appendChild(fab);
-  return root;
-}
-
-// ── Tab HTML templates ───────────────────────────────────────
-function _tStats() { return `
-<section class="spm-panel active" id="panel-stats" role="tabpanel">
-  <div class="spm-stats-grid">
-    <div class="spm-stat-card"><div class="spm-stat-icon">❤️</div><div class="spm-stat-value" id="s-likes">—</div><div class="spm-stat-label">Likes</div><div class="spm-stat-change" id="s-likes-chg"></div></div>
-    <div class="spm-stat-card"><div class="spm-stat-icon">💬</div><div class="spm-stat-value" id="s-comments">—</div><div class="spm-stat-label">Comments</div><div class="spm-stat-change" id="s-comments-chg"></div></div>
-    <div class="spm-stat-card"><div class="spm-stat-icon">🔁</div><div class="spm-stat-value" id="s-shares">—</div><div class="spm-stat-label">Shares</div><div class="spm-stat-change" id="s-shares-chg"></div></div>
-    <div class="spm-stat-card"><div class="spm-stat-icon">👁️</div><div class="spm-stat-value" id="s-reach">—</div><div class="spm-stat-label">Reach/Views</div></div>
-  </div>
-  <div class="spm-engage-bar">
-    <div class="spm-engage-label"><span>Engagement Rate</span><strong id="s-engage-val">—</strong></div>
-    <div class="spm-engage-track"><div class="spm-engage-fill" id="s-engage-fill" style="width:0%"></div></div>
-  </div>
-  <div class="spm-viral-card" id="spm-viral-card" style="display:none">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-      <span class="spm-label-bold" id="spm-viral-label-text">—</span>
-      <div style="position:relative;width:44px;height:44px;flex-shrink:0">
-        <svg viewBox="0 0 44 44" style="width:44px;height:44px">
-          <circle cx="22" cy="22" r="18" fill="none" stroke="var(--border)" stroke-width="4"/>
-          <circle id="spm-viral-arc" cx="22" cy="22" r="18" fill="none" stroke="var(--accent)" stroke-width="4"
-            stroke-dasharray="113" stroke-dashoffset="113" stroke-linecap="round" transform="rotate(-90 22 22)"/>
-        </svg>
-        <span id="spm-viral-score" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:11px;font-weight:800;color:var(--text)">0</span>
+      <div id="spm-tabs">
+        ${_TAB_IDS.map(t => `<button class="spm-tab${t === 'stats' ? ' spm-tab--active' : ''}" data-tab="${t}">${_tabLabel(t)}</button>`).join('')}
       </div>
-    </div>
-    <div id="spm-viral-signals" style="margin-top:6px"></div>
-  </div>
-  <div class="spm-btn-row">
-    <button class="spm-btn spm-btn-primary" id="btn-refresh">🔄 Refresh</button>
-    <button class="spm-btn spm-btn-secondary" id="btn-export-csv">📥 CSV</button>
-  </div>
-  <div class="spm-section-title">🔔 Auto Monitor</div>
-  <div class="spm-card">
-    <div class="spm-row-between">
-      <span class="spm-label-bold">Watch for changes</span>
-      <label class="spm-toggle"><input type="checkbox" id="monitor-toggle"><span class="spm-toggle-track"></span></label>
-    </div>
-    <div class="spm-row-gap" style="margin-top:8px;font-size:11px;color:var(--muted)">
-      Interval: <select class="spm-select" id="mon-interval">
-        <option value="15">15s</option><option value="30">30s</option>
-        <option value="60" selected>1min</option><option value="300">5min</option><option value="600">10min</option>
-      </select>
-      Alert if ≥ <select class="spm-select" id="mon-threshold">
-        <option value="1">1</option><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option>
-      </select>
-    </div>
-    <div id="monitor-log" class="spm-monitor-log"></div>
-  </div>
-  <div id="s-reach-note" class="spm-note" style="display:none">📷 Photo post — views only shown on Reels &amp; Videos.</div>
-</section>`; }
+      <div id="spm-body">
+        ${_TAB_IDS.map(t => `<div class="spm-panel" id="spm-panel-${t}" style="display:${t === 'stats' ? 'block' : 'none'}">${_buildPanel(t)}</div>`).join('')}
+      </div>
+    `;
 
-function _tComments() { return `
-<section class="spm-panel" id="panel-comments" role="tabpanel">
-  <div class="spm-row-gap" style="margin-bottom:8px">
-    <input class="spm-input" id="comment-search" placeholder="🔍 Search comments…" aria-label="Search"/>
-    <button class="spm-btn spm-btn-primary" style="width:auto;white-space:nowrap" id="btn-load-comments">Load</button>
-  </div>
-  <div class="spm-row-gap" style="margin-bottom:10px">
-    <button class="spm-btn spm-btn-secondary" id="btn-copy-comments">📋 Copy All</button>
-    <button class="spm-btn spm-btn-secondary" id="btn-load-more">Load More</button>
-  </div>
-  <div id="comment-count" class="spm-muted-text">No comments loaded</div>
-  <div id="comment-list" class="spm-comment-list">
-    <div class="spm-empty"><div class="spm-empty-icon">💬</div><p>Click "Load" to fetch comments</p></div>
-  </div>
-</section>`; }
-
-function _tProfile() { return `
-<section class="spm-panel" id="panel-profile" role="tabpanel">
-  <div id="profile-content"><div class="spm-empty"><div class="spm-empty-icon">👤</div><p>Click below to load profile</p></div></div>
-  <button class="spm-btn spm-btn-primary" id="btn-load-profile">👤 Load Profile Stats</button>
-  <div class="spm-note" style="margin-top:8px">💡 Visit the profile page for complete follower data.</div>
-</section>`; }
-
-function _tAnalytics() { return `
-<section class="spm-panel" id="panel-analytics" role="tabpanel">
-  <div id="analytics-summary" style="display:none;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px"></div>
-  <div class="spm-section-title">Likes Over Time</div>
-  <div class="spm-chart-card"><div id="chart-likes" class="spm-chart-area"></div></div>
-  <div class="spm-section-title">Comments Over Time</div>
-  <div class="spm-chart-card"><div id="chart-comments" class="spm-chart-area"></div></div>
-  <div class="spm-section-title">Engagement Over Time</div>
-  <div class="spm-chart-card"><div id="chart-engage" class="spm-chart-area"></div></div>
-  <div class="spm-section-title">History Log</div>
-  <div class="spm-chart-card" style="padding:0;overflow:auto">
-    <table class="spm-table"><thead><tr><th>When</th><th>Likes</th><th>Comments</th><th>Shares</th><th>Engage%</th><th>Viral</th></tr></thead>
-    <tbody id="history-tbody"></tbody></table>
-  </div>
-  <div class="spm-btn-row" style="margin-top:10px">
-    <button class="spm-btn spm-btn-secondary" id="btn-clear-history">🗑️ Clear</button>
-    <button class="spm-btn spm-btn-secondary" id="btn-export-json">📤 JSON</button>
-  </div>
-</section>`; }
-
-function _tDownloads() { return `
-<section class="spm-panel" id="panel-downloads" role="tabpanel">
-  <div class="spm-section-title">Post Media</div>
-  <div id="media-grid" class="spm-media-grid">
-    <div class="spm-empty" style="grid-column:1/-1"><div class="spm-empty-icon">🖼️</div><p>Refresh to detect media</p></div>
-  </div>
-  <div class="spm-btn-row">
-    <button class="spm-btn spm-btn-success"   id="btn-dl-all">⬇️ Download All</button>
-    <button class="spm-btn spm-btn-secondary" id="btn-scan-media">🔍 Re-scan</button>
-  </div>
-  <div class="spm-section-title" style="margin-top:14px">Bulk Profile Download</div>
-  <div class="spm-disclaimer">⚠️ Only download content you own or have rights to use.</div>
-  <button class="spm-btn spm-btn-warning" id="btn-bulk-profile">📦 Bulk Download</button>
-  <div id="bulk-wrap" style="display:none;margin-top:8px">
-    <div class="spm-prog-track"><div class="spm-prog-fill" id="bulk-fill" style="width:0%"></div></div>
-    <div class="spm-muted-text" id="bulk-text" style="text-align:center;margin-top:4px">Preparing…</div>
-  </div>
-</section>`; }
-
-function _tSettings() { return `
-<section class="spm-panel" id="panel-settings" role="tabpanel">
-  <div class="spm-section-title">Appearance</div>
-  <div class="spm-setting-row">
-    <div><div class="spm-label-bold">🌙 Dark Mode</div><div class="spm-muted-text">Switch sidebar theme</div></div>
-    <label class="spm-toggle"><input type="checkbox" id="theme-toggle"><span class="spm-toggle-track"></span></label>
-  </div>
-  <div class="spm-section-title">Notifications</div>
-  <div class="spm-setting-row">
-    <div><div class="spm-label-bold">🔔 Desktop Alerts</div><div class="spm-muted-text">Notify when stats change</div></div>
-    <label class="spm-toggle"><input type="checkbox" id="notif-toggle" checked><span class="spm-toggle-track"></span></label>
-  </div>
-  <div class="spm-section-title">Data</div>
-  <div class="spm-setting-row">
-    <div><div class="spm-label-bold">💾 Auto-save</div><div class="spm-muted-text">Save stats on each refresh</div></div>
-    <label class="spm-toggle"><input type="checkbox" id="autosave-toggle" checked><span class="spm-toggle-track"></span></label>
-  </div>
-  <button class="spm-btn spm-btn-secondary" id="btn-export-settings">📤 Export JSON</button>
-  <button class="spm-btn spm-btn-danger"    id="btn-clear-all">🗑️ Clear All Data</button>
-  <div class="spm-section-title">Compliance</div>
-  <div class="spm-disclaimer">⚠️ For personal use on your own posts only. Scraping may violate platform Terms.</div>
-  <div class="spm-section-title">About</div>
-  <div class="spm-card" style="font-size:11px;color:var(--muted)">📊 <strong>SPM Pro v${SPM.VERSION}</strong> · Instagram &amp; Facebook<br/>MV3 · Brave / Chrome / Edge</div>
-</section>`; }
-
-// ── Wire event handlers ──────────────────────────────────────
-function _wire() {
-  spmEl('spm-fab').onclick        = _toggle;
-  spmEl('spm-close-btn').onclick  = _close;
-  spmQA('.spm-tab').forEach(t => t.onclick = () => _switchTab(t.dataset.tab));
-
-  spmEl('btn-refresh').onclick    = () => _scrape(true);
-  spmEl('btn-export-csv').onclick = _exportCSV;
-
-  spmEl('monitor-toggle').onchange  = e => _onMonitorToggle(e.target.checked);
-  spmEl('mon-interval').onchange    = e => SpmMonitor.setInterval(+e.target.value);
-  spmEl('mon-threshold').onchange   = e => SpmMonitor.setThreshold(+e.target.value);
-
-  spmEl('btn-load-comments').onclick  = _loadComments;
-  spmEl('btn-copy-comments').onclick  = _copyComments;
-  spmEl('btn-load-more').onclick      = _clickLoadMore;
-  spmEl('comment-search').oninput     = spmDebounce(e => _filterComments(e.target.value), 250);
-
-  spmEl('btn-load-profile').onclick   = _loadProfile;
-  spmEl('btn-clear-history').onclick  = _clearHistory;
-  spmEl('btn-export-json').onclick    = _exportJSON;
-
-  spmEl('btn-dl-all').onclick       = _dlAll;
-  spmEl('btn-scan-media').onclick   = () => _scrape(true);
-  spmEl('btn-bulk-profile').onclick = _bulkDownload;
-
-  spmEl('theme-toggle').onchange     = e => _setTheme(e.target.checked ? 'dark' : 'light');
-  spmEl('notif-toggle').onchange     = e => _saveSetting('notifications', e.target.checked);
-  spmEl('autosave-toggle').onchange  = e => _saveSetting('autosave', e.target.checked);
-  spmEl('btn-export-settings').onclick = _exportJSON;
-  spmEl('btn-clear-all').onclick     = _clearAll;
-
-  _initResize();
-}
-
-// ── Sidebar visibility ───────────────────────────────────────
-function _toggle() { _ui.open ? _close() : _open(); }
-function _open()   {
-  _ui.open = true;
-  spmEl('spm-root')?.classList.add('spm-open');
-  spmEl('spm-fab')?.classList.add('spm-fab-open');
-  if (spmEl('spm-fab')) spmEl('spm-fab').innerText = '✕';
-  if (_ui.activeTab === 'analytics') _renderCharts().catch(()=>{});
-  if (_ui.activeTab === 'downloads') _renderMediaGrid();
-}
-function _close()  {
-  _ui.open = false;
-  spmEl('spm-root')?.classList.remove('spm-open');
-  spmEl('spm-fab')?.classList.remove('spm-fab-open');
-  if (spmEl('spm-fab')) spmEl('spm-fab').innerText = '📊';
-}
-function _switchTab(t) {
-  _ui.activeTab = t;
-  spmQA('.spm-tab').forEach(el => { el.classList.toggle('active', el.dataset.tab===t); el.setAttribute('aria-selected', String(el.dataset.tab===t)); });
-  spmQA('.spm-panel').forEach(p => p.classList.toggle('active', p.id===`panel-${t}`));
-  if (t==='analytics') _renderCharts().catch(()=>{});
-  if (t==='downloads') _renderMediaGrid();
-}
-function _applyTheme() { document.getElementById('spm-root')?.classList.toggle('spm-dark', _ui.settings.theme==='dark'); }
-function _setTheme(t)  { _ui.settings.theme=t; _applyTheme(); _saveSetting('theme',t); }
-async function _saveSetting(k, v) { try { _ui.settings[k]=v; await spmSet({spm_settings:_ui.settings}); } catch(e){spmLog.error('[UI] _saveSetting:',e.message);} }
-
-// ── Status bar ───────────────────────────────────────────────
-let _stTimer = null;
-function _setStatus(msg, type='idle', autoClear=true) {
-  try {
-    const dot=spmEl('spm-dot'), txt=spmEl('spm-status-text'), upd=spmEl('spm-last-update');
-    if (!txt) return;
-    txt.textContent = msg;
-    if (dot) { dot.className='spm-dot'; if(type==='ok')dot.classList.add('dot-ok'); if(type==='err')dot.classList.add('dot-err'); }
-    if (upd) upd.textContent = spmTs();
-    if (_stTimer) clearTimeout(_stTimer);
-    if (autoClear && type !== 'err') _stTimer = setTimeout(() => { if (txt) txt.textContent='Ready'; }, 3500);
-  } catch(e) {}
-}
-function _setLoading(id, on) {
-  const b = spmElFresh(id); if (!b) return;
-  b.disabled = on;
-  if (on) { b.dataset.orig=b.innerText; b.innerText='⏳…'; }
-  else b.innerText = b.dataset.orig || b.innerText;
-}
-function _setSourceBadge(src) {
-  const el = spmElFresh('spm-source-badge'); if (!el) return;
-  el.textContent = src==='api' ? 'API ✓' : 'DOM';
-  el.className   = 'spm-src-' + (src==='api' ? 'api' : 'dom');
-}
-
-// ── Core scrape — FIX #10: null-safe ────────────────────────
-const _scrape = spmDebounce(async function(showLoader=false) {
-  if (showLoader) _setLoading('btn-refresh', true);
-  _setStatus('Scanning…', 'idle', false);
-  try {
-    const fresh = SpmExtractor.stats();
-    // FIX #10: check for valid data before updating UI
-    if (!fresh) { _setStatus('No data yet', 'idle'); return; }
-
-    const prev   = _ui.current ?? {};
-    _ui.current  = fresh;
-    _ui.mediaUrls= fresh.mediaUrls ?? [];
-
-    _updateStatsUI(fresh, prev);
-    _setSourceBadge(fresh.source ?? 'dom');
-    if (_ui.activeTab === 'downloads') _renderMediaGrid();
-
-    // Analytics (null-safe)
-    let report = null;
-    try {
-      const prof = SpmExtractor.getLatestProfile() ?? {};
-      report = SpmAnalytics.buildReport(fresh, _ui.history, prof, SpmExtractor.getComments(fresh.postId) ?? []);
-    } catch (e) { spmLog.warn('[UI] analytics in scrape:', e.message); }
-
-    _ui.report = report;
-    if (report?.viral)      _updateViralCard(report.viral);
-    if (report?.engagement) _updateEngageBar(report.engagement);
-    if (_ui.activeTab === 'analytics') _renderCharts().catch(()=>{});
-
-    // Save snapshot
-    if (_ui.settings.autosave !== false && fresh.postId) {
-      try {
-        const snap = { ...fresh, ts:Date.now(), engageRate:report?.engagement?.ratePercent, viralScore:report?.viral?.score };
-        spmBoundedPush(_ui.history, snap, SPM.MAX_HISTORY);
-        await SpmStorage.saveSnapshot(snap);
-      } catch (e) { spmLog.warn('[UI] snapshot save:', e.message); }
-    }
-
-    SpmMonitor.setLastStats(fresh);
-    _setStatus('Updated ' + spmTs(), 'ok');
-  } catch (e) {
-    spmLog.error('[UI] _scrape:', e.message);
-    _setStatus('Error — see console', 'err', false);
-  } finally {
-    if (showLoader) _setLoading('btn-refresh', false);
+    document.body.appendChild(_sidebar);
+    _attachSidebarEvents();
   }
-}, 300);
 
-// ── Stat cards — FIX #10: null guards ───────────────────────
-function _updateStatsUI(fresh, prev) {
-  if (!fresh) return;
-  try {
-    const set = (id, val, muted) => {
-      const el = spmElFresh(id); if (!el) return;
-      el.textContent = spmFmt(val);
-      el.style.color = muted ? 'var(--muted)' : '';
-      el.style.fontSize = String(val ?? '').length > 7 ? '13px' : '';
-    };
-    set('s-likes',    fresh.likes);
-    set('s-comments', fresh.comments);
-    set('s-shares',   fresh.shares);
-    set('s-reach',    fresh.reach, fresh.reachIsNA);
+  function _tabLabel(tab) {
+    return { stats: '📈 Stats', comments: '💬 Comments', profile: '👤 Profile',
+             analytics: '📊 Analytics', downloads: '⬇ Downloads', settings: '⚙ Settings' }[tab] || tab;
+  }
 
-    const chg = (id, nv, ov) => {
-      const el = spmElFresh(id); if (!el) return;
-      if (nv==null || ov==null || typeof nv!=='number' || typeof ov!=='number' || nv===ov) { el.textContent=''; return; }
-      const d = nv-ov; el.textContent=(d>0?'▲ +':'▼ ')+Math.abs(d).toLocaleString();
-      el.className = 'spm-stat-change '+(d>0?'chg-up':'chg-down');
-    };
-    chg('s-likes-chg',    fresh.likes,    prev.likes);
-    chg('s-comments-chg', fresh.comments, prev.comments);
-    chg('s-shares-chg',   fresh.shares,   prev.shares);
+  function _buildPanel(tab) {
+    switch (tab) {
+      case 'stats':
+        return `
+          <div class="spm-cards">
+            <div class="spm-card" id="spm-card-likes"><span class="spm-card-label">Likes</span><span class="spm-card-val" id="spm-likes">—</span></div>
+            <div class="spm-card" id="spm-card-comments"><span class="spm-card-label">Comments</span><span class="spm-card-val" id="spm-comments">—</span></div>
+            <div class="spm-card" id="spm-card-shares"><span class="spm-card-label">Shares</span><span class="spm-card-val" id="spm-shares">—</span></div>
+            <div class="spm-card" id="spm-card-reach"><span class="spm-card-label">Reach/Views</span><span class="spm-card-val" id="spm-reach">—</span></div>
+          </div>
+          <div id="spm-engage-bar-wrap">
+            <div class="spm-label-row"><span>Engagement</span><span id="spm-engage-pct">—</span></div>
+            <div class="spm-bar-track"><div class="spm-bar-fill" id="spm-engage-bar" style="width:0%"></div></div>
+            <div id="spm-engage-tier" class="spm-tier"></div>
+          </div>
+          <div id="spm-viral-wrap">
+            <div class="spm-label-row"><span>Viral Score</span><span id="spm-viral-label">—</span></div>
+            <div class="spm-viral-ring">
+              <svg viewBox="0 0 80 80" width="80" height="80">
+                <circle cx="40" cy="40" r="34" fill="none" stroke="#e0e0e0" stroke-width="8"/>
+                <circle id="spm-viral-arc" cx="40" cy="40" r="34" fill="none" stroke="#f97316"
+                  stroke-width="8" stroke-linecap="round" stroke-dasharray="213.6" stroke-dashoffset="213.6"
+                  transform="rotate(-90 40 40)"/>
+              </svg>
+              <span id="spm-viral-score" class="spm-viral-num">0</span>
+            </div>
+            <div id="spm-viral-signals" class="spm-signals"></div>
+          </div>
+          <div id="spm-auto-wrap">
+            <button id="spm-auto-btn" class="spm-btn">▶ Start Auto Monitor</button>
+            <span id="spm-auto-status" class="spm-small"></span>
+          </div>
+          <button id="spm-scrape-btn" class="spm-btn spm-btn--secondary">🔄 Scrape DOM</button>
+        `;
 
-    const note = spmElFresh('s-reach-note');
-    if (note) note.style.display = fresh.reachIsNA ? 'block' : 'none';
-  } catch (e) { spmLog.error('[UI] _updateStatsUI:', e.message); }
-}
+      case 'comments':
+        return `
+          <div class="spm-row">
+            <button id="spm-load-comments" class="spm-btn">Load Comments</button>
+            <input id="spm-comment-search" class="spm-input" placeholder="Search…" type="text">
+            <button id="spm-copy-comments" class="spm-btn spm-btn--sm">Copy All</button>
+          </div>
+          <div id="spm-comment-list" class="spm-list"></div>
+        `;
 
-function _updateEngageBar(engage) {
-  try {
-    const rEl = spmElFresh('s-engage-val'), fEl = spmElFresh('s-engage-fill');
-    if (rEl) rEl.textContent = engage?.rate != null ? engage.ratePercent : '— (load profile for followers)';
-    if (fEl && engage?.rate != null) fEl.style.width = Math.min(100, engage.rate * 5) + '%';
-  } catch (e) { spmLog.error('[UI] _updateEngageBar:', e.message); }
-}
+      case 'profile':
+        return `
+          <div id="spm-profile-card" class="spm-profile-card">
+            <div class="spm-profile-avatar" id="spm-avatar"></div>
+            <div class="spm-profile-info">
+              <div id="spm-profile-name" class="spm-profile-name">—</div>
+              <div id="spm-profile-username" class="spm-small">—</div>
+            </div>
+          </div>
+          <div class="spm-cards">
+            <div class="spm-card"><span class="spm-card-label">Followers</span><span class="spm-card-val" id="spm-p-followers">—</span></div>
+            <div class="spm-card"><span class="spm-card-label">Following</span><span class="spm-card-val" id="spm-p-following">—</span></div>
+            <div class="spm-card"><span class="spm-card-label">Posts</span><span class="spm-card-val" id="spm-p-posts">—</span></div>
+          </div>
+          <div id="spm-profile-bio" class="spm-bio"></div>
+          <div id="spm-profile-note" class="spm-small spm-muted">Visit the profile page to load follower count.</div>
+        `;
 
-function _updateViralCard(viral) {
-  try {
-    const card = spmElFresh('spm-viral-card'); if (!card || !viral) return;
-    card.style.display = 'block';
-    const sc  = spmElFresh('spm-viral-score');
-    const lbl = spmElFresh('spm-viral-label-text');
-    const arc = document.getElementById('spm-viral-arc');
-    const sig = spmElFresh('spm-viral-signals');
-    if (sc)  sc.textContent  = viral.score ?? 0;
-    if (lbl) { lbl.textContent=viral.label??'—'; lbl.style.color=viral.score>=60?'var(--red)':viral.score>=40?'var(--orange)':'var(--muted)'; }
-    if (arc) { const c=113; arc.style.strokeDashoffset=String(c-((viral.score??0)/100)*c); arc.style.stroke=viral.score>=80?'#e74c3c':viral.score>=60?'#f39c12':viral.score>=40?'#27ae60':'var(--accent)'; }
-    if (sig && viral.signals?.length) sig.innerHTML=viral.signals.map(s=>`<div class="spm-signal-item">${spmEsc(s.label)}<span class="spm-signal-weight">+${s.weight}</span></div>`).join('');
-  } catch (e) { spmLog.error('[UI] _updateViralCard:', e.message); }
-}
+      case 'analytics':
+        return `
+          <div id="spm-charts">
+            <div class="spm-chart-title">Likes over time</div>
+            <svg id="spm-chart-likes" class="spm-chart" viewBox="0 0 300 80"></svg>
+            <div class="spm-chart-title">Comments over time</div>
+            <svg id="spm-chart-comments" class="spm-chart" viewBox="0 0 300 80"></svg>
+            <div class="spm-chart-title">Engagement rate over time</div>
+            <svg id="spm-chart-engage" class="spm-chart" viewBox="0 0 300 80"></svg>
+          </div>
+          <div id="spm-history-table-wrap">
+            <div class="spm-chart-title">History</div>
+            <div id="spm-history-table"></div>
+          </div>
+          <div id="spm-growth-info" class="spm-small"></div>
+        `;
 
-// ── Monitor event handlers ───────────────────────────────────
-function _wireMonitorEvents() {
-  // Live API data from pipeline
-  SpmMonitor.on('apiData', ({ postData, report }) => {
-    try {
-      if (!postData) return; // FIX #10: null guard
-      _ui.current  = postData;
-      _ui.mediaUrls= postData.mediaUrls ?? [];
-      _ui.report   = report ?? null;
-      _updateStatsUI(postData, _ui.current ?? {});
-      _setSourceBadge('api');
+      case 'downloads':
+        return `
+          <div class="spm-row">
+            <button id="spm-dl-all" class="spm-btn">⬇ Download All Media</button>
+            <button id="spm-dl-profile" class="spm-btn spm-btn--secondary">⬇ Profile Grid</button>
+          </div>
+          <div id="spm-media-grid" class="spm-media-grid"></div>
+        `;
+
+      case 'settings':
+        return `
+          <div class="spm-setting-row">
+            <label>Dark Mode</label>
+            <input type="checkbox" id="spm-dark-toggle">
+          </div>
+          <div class="spm-setting-row">
+            <label>Notifications</label>
+            <input type="checkbox" id="spm-notif-toggle" checked>
+          </div>
+          <div class="spm-setting-row">
+            <label>Auto-save snapshots</label>
+            <input type="checkbox" id="spm-autosave-toggle" checked>
+          </div>
+          <hr>
+          <button id="spm-export-btn" class="spm-btn">📤 Export JSON</button>
+          <button id="spm-clear-btn" class="spm-btn spm-btn--danger">🗑 Clear All Data</button>
+          <div id="spm-settings-status" class="spm-small spm-muted"></div>
+        `;
+
+      default: return '';
+    }
+  }
+
+  // ── Attach events (all in one place for easy cleanup) ─────────
+  // FIX v10: v9 added listeners inline during build, meaning re-initializing
+  // the sidebar would stack duplicate listeners (memory leak + double-firing).
+  // Now all listeners are attached once after build.
+  function _attachSidebarEvents() {
+    _q('#spm-close')?.addEventListener('click', _toggleSidebar);
+
+    // Tab switching
+    _sidebar.querySelectorAll('.spm-tab').forEach(btn => {
+      btn.addEventListener('click', () => _switchTab(btn.dataset.tab));
+    });
+
+    // Stats tab
+    _q('#spm-auto-btn')?.addEventListener('click', _toggleAutoMonitor);
+    // FIX v10: scrape button calls _scrape directly (not debounced version)
+    // so the loader always shows immediately on click.
+    _q('#spm-scrape-btn')?.addEventListener('click', () => _scrapeAndUpdate(true));
+
+    // Comments tab
+    _q('#spm-load-comments')?.addEventListener('click', _loadComments);
+    _q('#spm-comment-search')?.addEventListener('input', spmDebounce(_filterComments, 200));
+    _q('#spm-copy-comments')?.addEventListener('click', _copyComments);
+
+    // Downloads tab
+    _q('#spm-dl-all')?.addEventListener('click', _downloadAllMedia);
+    _q('#spm-dl-profile')?.addEventListener('click', _downloadProfileGrid);
+
+    // Settings tab
+    _q('#spm-dark-toggle')?.addEventListener('change', e => _setDarkMode(e.target.checked));
+    _q('#spm-clear-btn')?.addEventListener('click', _clearData);
+    _q('#spm-export-btn')?.addEventListener('click', _exportData);
+  }
+
+  // ── Tab switching ─────────────────────────────────────────────
+  function _switchTab(tabId) {
+    if (!_TAB_IDS.includes(tabId)) return;
+    _activeTab = tabId;
+    _sidebar.querySelectorAll('.spm-tab').forEach(b => {
+      b.classList.toggle('spm-tab--active', b.dataset.tab === tabId);
+    });
+    _TAB_IDS.forEach(t => {
+      const panel = _q(`#spm-panel-${t}`);
+      if (panel) panel.style.display = t === tabId ? 'block' : 'none';
+    });
+  }
+
+  // ── Scrape (immediate, not debounced, fixes showLoader issue) ─
+  // FIX v10: was wrapped in spmDebounce() — debouncing meant the showLoader
+  // param from the final call was used, but rapid clicks would lose it.
+  // Now _scrapeAndUpdate is immediate; the debounced version is only used
+  // for auto-refresh (not user-triggered).
+  async function _scrapeAndUpdate(showLoader = false) {
+    if (showLoader) _setStatus('Scraping…');
+    const fresh = SpmExtractor.stats();
+    if (!fresh) { _setStatus('No data yet'); return; }
+    _updateStatsUI(fresh, null);
+    const stored = await SpmStorage.getPostHistory(fresh.postId);
+    const report = SpmAnalytics.buildReport(fresh, stored?.history || [], SpmExtractor.profile(), []);
+    _updateEngageBar(report.engagement);
+    _updateViralCard(report.viral);
+    _updateAnalyticsTab(report);
+    _setStatus('Done');
+  }
+
+  // Debounced version only for auto-triggers
+  const _scrapeDebounced = spmDebounce(() => _scrapeAndUpdate(false), 300);
+
+  // ── Monitor event listeners ───────────────────────────────────
+  function _attachMonitorListeners() {
+    SpmMonitor.on('apiData', ({ postData, report }) => {
+      if (!postData) return;
+      _updateStatsUI(postData, report);
       if (report?.viral)      _updateViralCard(report.viral);
       if (report?.engagement) _updateEngageBar(report.engagement);
-      if (_ui.activeTab === 'downloads') _renderMediaGrid();
-      if (_ui.activeTab === 'analytics') _renderCharts().catch(()=>{});
-      _setStatus('Live API data ✓', 'ok');
-      spmLog.pipe('[UI] API data displayed:', 'likes', postData.likes, 'comments', postData.comments);
-    } catch (e) { spmLog.error('[UI] apiData handler:', e.message); }
-  });
+      _updateProfileTab(SpmExtractor.profile());
+      _updateMediaGrid(postData.mediaUrls);
+      _updateAnalyticsTab(report);
+      _setStatus(`Updated ${new Date().toLocaleTimeString()}`);
+    });
 
-  SpmMonitor.on('alert',       entry => { try { _addMonitorLog(entry); } catch(e){} });
-  SpmMonitor.on('stateChange', ({active}) => {
-    try { spmElFresh('spm-monitor-dot')?.classList.toggle('dot-active', active); } catch(e){}
-  });
-  SpmMonitor.on('tick', ({ fresh }) => {
-    try {
-      if (!fresh) return; // FIX #10
-      _updateStatsUI(fresh, _ui.current ?? {});
-    } catch (e) { spmLog.error('[UI] tick handler:', e.message); }
-  });
-  SpmMonitor.on('navigate', () => {
-    try {
-      spmClearElCache();
-      _ui.current = null; _ui.comments=[]; _ui.mediaUrls=[]; _ui.report=null;
-      setTimeout(() => _scrape(false), 2000);
-    } catch(e) {}
-  });
-}
+    SpmMonitor.on('navigate', () => {
+      _setStatus('Navigated — waiting for data…');
+      _resetStatCards();
+    });
 
-// ── Monitor toggle ───────────────────────────────────────────
-function _onMonitorToggle(on) {
-  try {
-    if (on) {
-      SpmMonitor.startAutoMonitor({ interval:+spmEl('mon-interval').value, threshold:+spmEl('mon-threshold').value });
-      _addMonitorLog({ isAlert:false, ts:Date.now(), msg:'▶ Monitoring started' });
-    } else {
-      SpmMonitor.stopAutoMonitor();
-      _addMonitorLog({ isAlert:false, ts:Date.now(), msg:'⏹ Stopped' });
+    SpmMonitor.on('stateChange', ({ active }) => {
+      const btn = _q('#spm-auto-btn');
+      const st  = _q('#spm-auto-status');
+      if (btn) btn.textContent = active ? '⏹ Stop Auto Monitor' : '▶ Start Auto Monitor';
+      if (st)  st.textContent  = active ? 'Monitoring active' : '';
+    });
+
+    SpmMonitor.on('alert', entry => {
+      _setStatus(`⚠ ${entry.type}: +${spmFmt(entry.delta)}`);
+    });
+  }
+
+  // ── UI update helpers ─────────────────────────────────────────
+  function _updateStatsUI(post, report) {
+    _setText('#spm-likes',    spmFmt(post.likes));
+    _setText('#spm-comments', spmFmt(post.comments));
+    _setText('#spm-shares',   post.shares != null ? spmFmt(post.shares) : '—');
+    _setText('#spm-reach',    post.isVideo && post.reach != null ? spmFmt(post.reach) : (post.isVideo ? '—' : 'N/A'));
+  }
+
+  function _updateEngageBar(engagement) {
+    if (!engagement) return;
+    const pct  = engagement.rate != null ? Math.min(100, engagement.rate * 1000) : 0;
+    const bar  = _q('#spm-engage-bar');
+    const pctEl = _q('#spm-engage-pct');
+    const tierEl = _q('#spm-engage-tier');
+    if (bar)   bar.style.width = pct + '%';
+    if (pctEl) pctEl.textContent = engagement.ratePercent;
+    if (tierEl) {
+      tierEl.textContent = engagement.label;
+      tierEl.className = `spm-tier spm-tier--${engagement.tier}`;
     }
-  } catch(e) { spmLog.error('[UI] _onMonitorToggle:', e.message); }
-}
-function _addMonitorLog(entry) {
-  try {
-    const log = spmElFresh('monitor-log'); if (!log) return;
-    const div = document.createElement('div');
-    div.className = 'spm-log-item' + (entry.isAlert ? ' spm-log-alert' : '');
-    const t = new Date(entry.ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    div.textContent = `[${t}] ${entry.msg ?? (entry.alerts ?? []).map(a=>`${a.label} ${a.diff>0?'+':''}${a.diff}`).join(' · ')}`;
-    log.prepend(div);
-    while (log.children.length > SPM.MAX_LOG) log.removeChild(log.lastChild);
-  } catch(e) {}
-}
+  }
 
-// ── Comments tab ─────────────────────────────────────────────
-async function _loadComments() {
-  _setLoading('btn-load-comments', true);
-  _setStatus('Loading comments…', 'idle', false);
-  try {
-    await new Promise(r => setTimeout(r, 80));
-    _ui.comments = SpmExtractor.getComments(_ui.current?.postId);
-    _renderCommentList(_ui.comments);
-    const ct = spmElFresh('comment-count');
-    if (ct) ct.textContent = `${_ui.comments.length} comment${_ui.comments.length!==1?'s':''} found`;
-    _setStatus(`Loaded ${_ui.comments.length} comments`, 'ok');
-  } catch (e) {
-    spmLog.error('[UI] _loadComments:', e.message);
-    _setStatus('Failed to load', 'err', false);
-  } finally { _setLoading('btn-load-comments', false); }
-}
-function _renderCommentList(items) {
-  const list = spmElFresh('comment-list'); if (!list) return;
-  if (!items?.length) { list.innerHTML=`<div class="spm-empty"><div class="spm-empty-icon">💬</div><p>No comments detected</p></div>`; return; }
-  const frag = document.createDocumentFragment();
-  items.forEach(c => {
-    const div = document.createElement('div'); div.className='spm-comment-item';
-    div.innerHTML=`<div class="spm-comment-header"><div class="spm-avatar">${spmEsc((c.username??'?').charAt(0).toUpperCase())}</div><span class="spm-comment-user">@${spmEsc(c.username??'?')}</span>${c.time?`<span class="spm-comment-time">${spmEsc(c.time)}</span>`:''}</div><div class="spm-comment-text">${spmEsc(c.text??'')}</div>${c.likes!=null?`<div class="spm-comment-meta">❤️ ${spmFmt(c.likes)}</div>`:''}`;
-    frag.appendChild(div);
-  });
-  list.innerHTML=''; list.appendChild(frag);
-}
-const _filterComments = spmDebounce(q => {
-  const lo=q.toLowerCase(), f=lo?_ui.comments.filter(c=>(c.username??'').toLowerCase().includes(lo)||(c.text??'').toLowerCase().includes(lo)):_ui.comments;
-  _renderCommentList(f);
-  const ct=spmElFresh('comment-count'); if(ct) ct.textContent=`${f.length} of ${_ui.comments.length} shown`;
-}, 200);
-function _copyComments() {
-  if (!_ui.comments.length) { _setStatus('No comments', 'err'); return; }
-  navigator.clipboard.writeText(_ui.comments.map(c=>`@${c.username}: ${c.text}`).join('\n'))
-    .then(() => _setStatus(`Copied ${_ui.comments.length} ✓`,'ok'))
-    .catch(() => _setStatus('Copy failed','err'));
-}
-function _clickLoadMore() {
-  const btn=spmQA('button,span').find(el=>/load more|view more|view all/i.test((el.innerText||'').trim()));
-  if (btn) { btn.click(); setTimeout(_loadComments, 1400); _setStatus('Loading more…','idle',false); }
-  else _setStatus('No "Load more" button found','err');
-}
+  function _updateViralCard(viral) {
+    if (!viral) return;
+    const arc   = _q('#spm-viral-arc');
+    const score = _q('#spm-viral-score');
+    const label = _q('#spm-viral-label');
+    const sigs  = _q('#spm-viral-signals');
+    const circumference = 213.6;
+    if (arc)   arc.style.strokeDashoffset = String(circumference - (viral.score / 100) * circumference);
+    if (score) score.textContent = String(viral.score);
+    if (label) label.textContent = viral.label;
+    if (sigs)  sigs.innerHTML = (viral.signals || []).map(s => `<span class="spm-signal">${spmEsc(s)}</span>`).join('');
+  }
 
-// ── Profile tab ──────────────────────────────────────────────
-async function _loadProfile() {
-  _setLoading('btn-load-profile', true);
-  _setStatus('Loading profile…', 'idle', false);
-  try {
-    _ui.profile = SpmExtractor.profile() ?? {};
-    const p   = _ui.profile;
-    const c   = spmElFresh('profile-content'); if (!c) return;
-    const has = p.followers || p.following || p.posts;
-    c.innerHTML=`<div class="spm-profile-card">${p.avatarSrc?`<img class="spm-profile-img" src="${spmEsc(p.avatarSrc)}" alt="avatar" onerror="this.style.display='none'"/>`:`<div class="spm-profile-placeholder">👤</div>`}<div><div class="spm-profile-name">${spmEsc(p.name||p.username||'Unknown')}</div>${p.username?`<div class="spm-muted-text">@${spmEsc(p.username)}</div>`:''} ${p.bio?`<div class="spm-profile-bio">${spmEsc(p.bio)}</div>`:''}</div></div>${has?`<div class="spm-profile-stats"><div class="spm-profile-stat"><div class="spm-profile-stat-val">${spmFmt(p.followers)}</div><div class="spm-muted-text">Followers</div></div><div class="spm-profile-stat"><div class="spm-profile-stat-val">${spmFmt(p.following)}</div><div class="spm-muted-text">Following</div></div><div class="spm-profile-stat"><div class="spm-profile-stat-val">${spmFmt(p.posts)}</div><div class="spm-muted-text">Posts</div></div></div>`:`<div class="spm-note">Visit the profile page for follower data.</div>`}`;
-    _setStatus('Profile loaded ✓','ok');
-  } catch (e) { spmLog.error('[UI] _loadProfile:',e.message); _setStatus('Failed','err',false); }
-  finally { _setLoading('btn-load-profile', false); }
-}
+  // ── Analytics tab with SVG charts ────────────────────────────
+  // FIX v10: v9 had no guard for <2 data points → empty path / NaN coords
+  function _updateAnalyticsTab(report) {
+    if (!report) return;
 
-// ── Analytics tab ────────────────────────────────────────────
-async function _renderCharts() {
-  try {
-    const allHist  = await SpmMonitor.getHistory();
-    const url0     = location.href.split('?')[0];
-    const hist     = (allHist ?? []).filter(h => h?.url && (h.url===location.href || h.url.split('?')[0]===url0));
+    _renderChart('#spm-chart-likes', report.history, 'likes');
+    _renderChart('#spm-chart-comments', report.history, 'comments');
+    _renderChart('#spm-chart-engage', report.history, 'engagement');
 
-    // Summary tiles
-    const sumEl = spmElFresh('analytics-summary');
-    if (sumEl && _ui.report) {
-      const r = _ui.report;
-      sumEl.style.display='grid';
-      sumEl.innerHTML=`
-        <div class="spm-analytics-tile ${r.viral?.score>=60?'viral':''}"><div class="spm-analytics-tile-val">${r.engagement?.ratePercent||'—'}</div><div class="spm-analytics-tile-label">Engage</div></div>
-        <div class="spm-analytics-tile"><div class="spm-analytics-tile-val">${r.growth?.trend||'—'}</div><div class="spm-analytics-tile-label">Growth</div></div>
-        <div class="spm-analytics-tile ${r.viral?.score>=60?'viral':''}"><div class="spm-analytics-tile-val">${r.viral?.score??'—'}/100</div><div class="spm-analytics-tile-label">Viral</div></div>
-        <div class="spm-analytics-tile"><div class="spm-analytics-tile-val">${r.hashtags?.unique||0}</div><div class="spm-analytics-tile-label">Tags</div></div>`;
+    const growthEl = _q('#spm-growth-info');
+    if (growthEl && report.growth) {
+      const g = report.growth;
+      growthEl.textContent = g.avgLikesPerHour != null
+        ? `Avg growth: ${spmFmt(g.avgLikesPerHour)}/hr · Trend: ${g.trend}`
+        : 'Not enough data for growth rate.';
     }
 
-    _drawChart('chart-likes',    hist, 'likes',    'var(--accent)');
-    _drawChart('chart-comments', hist, 'comments', 'var(--green)');
-    _drawChart('chart-engage',   hist.map(h=>({...h,_er:h.engageRate?parseFloat(h.engageRate):null})), '_er', 'var(--orange)');
-    _renderHistoryTable(hist);
-  } catch (e) { spmLog.error('[UI] _renderCharts:', e.message); }
-}
+    // History table
+    const tableEl = _q('#spm-history-table');
+    if (tableEl && report.history?.length) {
+      tableEl.innerHTML = `
+        <table class="spm-table">
+          <thead><tr><th>Time</th><th>Likes</th><th>Comments</th><th>Engagement</th></tr></thead>
+          <tbody>${report.history.slice(-20).reverse().map(h => `
+            <tr>
+              <td>${h.ts ? new Date(h.ts).toLocaleTimeString() : '—'}</td>
+              <td>${spmFmt(h.likes)}</td>
+              <td>${spmFmt(h.comments)}</td>
+              <td>${h.engagement != null ? (h.engagement * 100).toFixed(2) + '%' : '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+    } else if (tableEl) {
+      tableEl.innerHTML = '<div class="spm-muted">No history yet — refresh a few times.</div>';
+    }
+  }
 
-function _drawChart(id, data, field, color) {
-  const c = spmElFresh(id); if (!c) return;
-  try {
-    const pts = (data ?? []).map(h => ({ x:h.ts, y:h[field] })).filter(p => p.y != null && !isNaN(p.y));
-    if (pts.length < 2) { c.innerHTML=`<div class="spm-chart-empty">Not enough data — refresh a few times.</div>`; return; }
-    const W=340,H=130,P={t:14,r:10,b:26,l:42},cW=W-P.l-P.r,cH=H-P.t-P.b;
-    const ys=pts.map(p=>p.y),mn=Math.min(...ys),mx=Math.max(...ys),rng=mx-mn||1;
-    const xS=i=>P.l+(i/(pts.length-1||1))*cW, yS=v=>P.t+cH-((v-mn)/rng)*cH;
-    const line=pts.map((p,i)=>`${xS(i)},${yS(p.y)}`).join(' ');
-    const area=`${line} ${xS(pts.length-1)},${P.t+cH} ${xS(0)},${P.t+cH}`;
-    const ticks=[0,.5,1].map(t=>{const y=P.t+t*cH,v=mx-t*rng;const lbl=v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(1)+'K':Math.round(v).toString();return`<line x1="${P.l}" y1="${y}" x2="${W-P.r}" y2="${y}" stroke="var(--border)" stroke-dasharray="3,2" stroke-width="1"/><text x="${P.l-4}" y="${y+4}" text-anchor="end" font-size="9" fill="var(--muted)">${lbl}</text>`;}).join('');
-    const xlbls=[0,Math.floor((pts.length-1)/2),pts.length-1].filter((v,i,a)=>a.indexOf(v)===i).map(i=>`<text x="${xS(i)}" y="${H-4}" text-anchor="middle" font-size="9" fill="var(--muted)">${new Date(pts[i].x).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</text>`).join('');
-    const dots=pts.map((p,i)=>`<circle cx="${xS(i)}" cy="${yS(p.y)}" r="3" fill="${color}" stroke="var(--bg)" stroke-width="1.5"><title>${Math.round(p.y).toLocaleString()}</title></circle>`).join('');
-    const uid=id.replace(/[^a-z]/gi,'');
-    c.innerHTML=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g${uid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${color}" stop-opacity=".2"/><stop offset="100%" stop-color="${color}" stop-opacity=".01"/></linearGradient></defs>${ticks}<polygon points="${area}" fill="url(#g${uid})"/><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${dots}${xlbls}</svg>`;
-  } catch (e) { spmLog.error('[UI] _drawChart:', id, e.message); c.innerHTML=`<div class="spm-chart-empty">Chart error</div>`; }
-}
+  // SVG line chart — FIX v10: guard for 0 or 1 points
+  function _renderChart(selector, history, field) {
+    const svg = _q(selector);
+    if (!svg) return;
 
-function _renderHistoryTable(hist) {
-  const tb = spmElFresh('history-tbody'); if (!tb) return;
-  try {
-    if (!hist?.length) { tb.innerHTML=`<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">No history for this post yet</td></tr>`; return; }
-    const frag = document.createDocumentFragment();
-    [...hist].reverse().slice(0,40).forEach(h => {
-      const tr = document.createElement('tr');
-      const vs = h.viralScore;
-      const vc = vs>=60?'background:rgba(231,76,60,.12);color:#c0392b':vs>=40?'background:rgba(243,156,18,.12);color:#d35400':'';
-      tr.innerHTML=`<td>${spmAgo(h.ts)}</td><td>${spmFmt(h.likes)}</td><td>${spmFmt(h.comments)}</td><td>${spmFmt(h.shares)}</td><td>${h.engageRate??'—'}</td><td style="${vc}">${vs!=null?vs+'/100':'—'}</td>`;
-      frag.appendChild(tr);
+    const points = (history || []).filter(h => h[field] != null).slice(-30);
+
+    // FIX: need at least 2 points to draw a line
+    if (points.length < 2) {
+      svg.innerHTML = '<text x="10" y="40" class="spm-chart-empty">Not enough data</text>';
+      return;
+    }
+
+    const vals = points.map(p => p[field]);
+    const minV = Math.min(...vals);
+    const maxV = Math.max(...vals);
+    const range = maxV - minV || 1; // FIX: prevent divide-by-zero when all values are equal
+
+    const W = 300, H = 80, PAD = 8;
+    const toX = i => PAD + (i / (points.length - 1)) * (W - PAD * 2);
+    const toY = v => H - PAD - ((v - minV) / range) * (H - PAD * 2);
+
+    const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(p[field]).toFixed(1)}`).join(' ');
+
+    svg.innerHTML = `
+      <path d="${spmEsc(d)}" fill="none" stroke="var(--spm-accent)" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="${toX(points.length - 1).toFixed(1)}" cy="${toY(vals[vals.length - 1]).toFixed(1)}" r="3" fill="var(--spm-accent)"/>
+    `;
+  }
+
+  // ── Profile tab ───────────────────────────────────────────────
+  function _updateProfileTab(profile) {
+    if (!profile) return;
+    _setText('#spm-profile-name',     profile.fullName || profile.username || '—');
+    _setText('#spm-profile-username', profile.username ? '@' + profile.username : '—');
+    _setText('#spm-p-followers',      spmFmt(profile.followers));
+    _setText('#spm-p-following',      spmFmt(profile.following));
+    _setText('#spm-p-posts',          spmFmt(profile.posts));
+    const bioEl = _q('#spm-profile-bio');
+    if (bioEl) bioEl.textContent = profile.bio || '';
+    const avatarEl = _q('#spm-avatar');
+    if (avatarEl && profile.avatar && spmValidateUrl(profile.avatar)) {
+      avatarEl.style.backgroundImage = `url(${profile.avatar})`;
+    }
+  }
+
+  // ── Media grid ────────────────────────────────────────────────
+  function _updateMediaGrid(urls) {
+    const grid = _q('#spm-media-grid');
+    if (!grid || !urls?.length) return;
+    grid.innerHTML = urls.map(u => `
+      <div class="spm-media-item">
+        <img src="${spmEsc(u)}" class="spm-media-thumb" loading="lazy" onerror="this.style.display='none'">
+        <button class="spm-dl-one spm-btn spm-btn--sm" data-url="${spmEsc(u)}">⬇</button>
+      </div>`).join('');
+    grid.querySelectorAll('.spm-dl-one').forEach(btn => {
+      btn.addEventListener('click', () => spmSend({ type: 'DOWNLOAD_MEDIA', url: btn.dataset.url }));
     });
-    tb.innerHTML=''; tb.appendChild(frag);
-  } catch (e) { spmLog.error('[UI] _renderHistoryTable:', e.message); }
-}
-async function _clearHistory() {
-  if (!confirm('Clear all history?')) return;
-  _ui.history = [];
-  try { await SpmStorage.clearAll(); } catch(e) {}
-  _renderCharts().catch(()=>{});
-  _setStatus('History cleared', 'ok');
-}
+  }
 
-// ── Downloads ────────────────────────────────────────────────
-function _renderMediaGrid() {
-  const grid = spmElFresh('media-grid'); if (!grid) return;
-  try {
-    const urls = _ui.mediaUrls ?? [];
-    if (!urls.length) { grid.innerHTML=`<div class="spm-empty" style="grid-column:1/-1"><div class="spm-empty-icon">🖼️</div><p>No media found</p></div>`; return; }
-    const frag = document.createDocumentFragment();
-    urls.forEach((url, i) => {
-      const isVid = /\.mp4|video/i.test(url);
-      const w = document.createElement('div'); w.className='spm-thumb'; w.dataset.url=url; w.dataset.i=i;
-      w.innerHTML=isVid?`<div class="spm-thumb-inner spm-thumb-video">🎬<div class="spm-thumb-badge">MP4</div></div><div class="spm-thumb-overlay">⬇️</div>`:`<img src="${spmEsc(url)}" alt="media ${i+1}" loading="lazy" onerror="this.closest('.spm-thumb').style.display='none'"/><div class="spm-thumb-overlay">⬇️</div>`;
-      w.onclick = () => _dlOne(url, i);
-      frag.appendChild(w);
-    });
-    grid.innerHTML=''; grid.appendChild(frag);
-  } catch (e) { spmLog.error('[UI] _renderMediaGrid:', e.message); }
-}
-async function _dlOne(url, idx) {
-  if (!spmValidateUrl(url)) { _setStatus('Invalid URL','err'); return; }
-  const ext=/\.mp4|video/i.test(url)?'mp4':'jpg';
-  try {
-    const res = await spmSend({ type:'DOWNLOAD_MEDIA', url, filename:`${SPM.PLATFORM}_${Date.now()}_${idx}.${ext}` });
-    _setStatus(res?.ok?'Downloading…':'Download failed', res?.ok?'ok':'err');
-  } catch(e) { _setStatus('Download error','err'); }
-}
-async function _dlAll() {
-  if (!_ui.mediaUrls?.length) { _setStatus('No media','err'); return; }
-  try {
-    const res = await spmSend({ type:'BULK_DOWNLOAD', urls:_ui.mediaUrls, prefix:`${SPM.PLATFORM}_${Date.now()}` });
-    _setStatus(res?.ok?`Downloaded ${res.count} ✓`:'Error', res?.ok?'ok':'err');
-  } catch(e) { _setStatus('Bulk error','err'); }
-}
-async function _bulkDownload() {
-  _setLoading('btn-bulk-profile', true);
-  const wrap=spmElFresh('bulk-wrap'),fill=spmElFresh('bulk-fill'),text=spmElFresh('bulk-text');
-  if (wrap) wrap.style.display='block'; if (fill) fill.style.width='20%';
-  try {
+  // ── Comments tab ──────────────────────────────────────────────
+  let _allComments = [];
+  function _loadComments() {
+    const post = SpmExtractor.getLatestPost();
+    _allComments = post ? SpmExtractor.getComments(post.postId) : [];
+    _renderComments(_allComments);
+  }
+
+  function _renderComments(list) {
+    const el = _q('#spm-comment-list');
+    if (!el) return;
+    if (!list?.length) { el.innerHTML = '<div class="spm-muted">No comments found.</div>'; return; }
+    el.innerHTML = list.map(c => `
+      <div class="spm-comment">
+        <span class="spm-comment-user">${spmEsc(c.username)}</span>
+        <span class="spm-comment-text">${spmEsc(c.text)}</span>
+      </div>`).join('');
+  }
+
+  function _filterComments() {
+    const q = (_q('#spm-comment-search')?.value || '').toLowerCase();
+    _renderComments(q ? _allComments.filter(c => c.text?.toLowerCase().includes(q)) : _allComments);
+  }
+
+  function _copyComments() {
+    const text = _allComments.map(c => `${c.username}: ${c.text}`).join('\n');
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+
+  // ── Downloads ─────────────────────────────────────────────────
+  async function _downloadAllMedia() {
+    const post = SpmExtractor.getLatestPost();
+    if (!post?.mediaUrls?.length) return;
+    await spmSend({ type: 'BULK_DOWNLOAD', urls: post.mediaUrls });
+  }
+
+  async function _downloadProfileGrid() {
     const urls = SpmExtractor.profileGridMedia();
-    if (!urls.length) { _setStatus('No media on page','err',false); return; }
-    if (text) text.textContent=`Found ${urls.length}…`; if(fill) fill.style.width='50%';
-    const res = await spmSend({ type:'BULK_DOWNLOAD', urls, prefix:`${SPM.PLATFORM}_profile_${Date.now()}` });
-    if(fill) fill.style.width='100%'; if(text) text.textContent=`✅ ${res?.count||0} files`;
-    _setStatus(`Bulk: ${res?.count||0} ✓`, 'ok');
-    setTimeout(() => { if(wrap) wrap.style.display='none'; }, 4000);
-  } catch(e) { spmLog.error('[UI] _bulkDownload:',e.message); _setStatus('Failed','err',false); }
-  finally { _setLoading('btn-bulk-profile', false); }
-}
+    if (!urls.length) return;
+    await spmSend({ type: 'BULK_DOWNLOAD', urls });
+  }
 
-// ── Export ───────────────────────────────────────────────────
-async function _exportCSV() {
-  try {
-    const hist = await SpmMonitor.getHistory();
-    _blob(SpmAnalytics.historyToCsv(hist), `spm_export_${Date.now()}.csv`, 'text/csv');
-    _setStatus('CSV exported ✓','ok');
-  } catch(e) { _setStatus('Export error','err'); }
-}
-async function _exportJSON() {
-  try {
-    const hist = await SpmMonitor.getHistory();
-    _blob(JSON.stringify({exported:new Date().toISOString(),history:hist},null,2), `spm_data_${Date.now()}.json`, 'application/json');
-    _setStatus('JSON exported ✓','ok');
-  } catch(e) { _setStatus('Export error','err'); }
-}
-function _blob(content, filename, mime) {
-  try {
-    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([content],{type:mime})); a.download=filename; a.style.display='none';
-    document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);document.body.removeChild(a);},5000);
-  } catch(e) {}
-}
-async function _clearAll() {
-  if (!confirm('Delete ALL saved data?')) return;
-  _ui.history=[]; try { await SpmStorage.clearAll(); } catch(e) {}
-  _setStatus('All data cleared','ok');
-}
+  // ── Settings ──────────────────────────────────────────────────
+  async function _clearData() {
+    await SpmStorage.clearAll();
+    await spmSend({ type: 'CLEAR_HISTORY' });
+    _setText('#spm-settings-status', 'All data cleared.');
+    setTimeout(() => _setText('#spm-settings-status', ''), 2000);
+  }
 
-// ── Resize handle ────────────────────────────────────────────
-function _initResize() {
-  const h=spmEl('spm-resize-handle'), root=spmEl('spm-root'); if(!h||!root) return;
-  let drag=false,sx=0,sw=0;
-  h.onmousedown=e=>{
-    drag=true;sx=e.clientX;sw=root.offsetWidth; h.classList.add('dragging');
-    const mv=spmThrottle(e2=>{if(!drag)return;root.style.width=Math.min(700,Math.max(280,sw-(e2.clientX-sx)))+'px';},16);
-    const up=()=>{drag=false;h.classList.remove('dragging');document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
-    document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
-  };
-}
+  async function _exportData() {
+    const history = await SpmStorage.getAllHistory();
+    const blob = new Blob([JSON.stringify(history, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `spm-export-${Date.now()}.json`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
-// ── Boot ─────────────────────────────────────────────────────
-function _init() {
-  try {
-    _build();
-    spmClearElCache();
-    _wire();
-    _wireMonitorEvents();
-    // FIX #13: init monitor AFTER wiring UI events (no race)
-    SpmMonitor.init(() => _scrape(false));
-    _loadState().then(() => setTimeout(() => _scrape(false), 1500));
-    spmLog.pipe('[UI] SPM Pro v8 ready on', SPM.PLATFORM);
-  } catch (e) { spmLog.error('[UI] Boot failed:', e.message); }
-}
+  // ── Dark mode ─────────────────────────────────────────────────
+  function _setDarkMode(on) {
+    _darkMode = on;
+    _sidebar?.classList.toggle('spm-dark', on);
+    const toggle = _q('#spm-dark-toggle');
+    if (toggle) toggle.checked = on;
+  }
 
-if (document.readyState === 'complete') _init();
-else window.addEventListener('load', _init, { once:true });
+  // FIX v10: listen to system theme changes
+  function _attachSystemThemeListener() {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener('change', e => {
+      // Only auto-switch if user hasn't manually set a preference
+      const stored = localStorage.getItem('spm-dark-mode');
+      if (stored === null) _setDarkMode(e.matches);
+    });
+    // Init from system
+    if (localStorage.getItem('spm-dark-mode') === null) {
+      _setDarkMode(mq.matches);
+    }
+  }
 
-} // end guard
+  // ── Auto-monitor toggle ───────────────────────────────────────
+  let _autoActive = false;
+  function _toggleAutoMonitor() {
+    _autoActive ? SpmMonitor.stopAutoMonitor() : SpmMonitor.startAutoMonitor({ interval: 30_000, threshold: 5 });
+    _autoActive = !_autoActive;
+  }
+
+  // ── Toggle sidebar visibility ─────────────────────────────────
+  function _toggleSidebar() {
+    if (!_sidebar) return;
+    _sidebar.classList.toggle('spm-hidden');
+  }
+
+  // ── Reset stat cards on navigation ───────────────────────────
+  function _resetStatCards() {
+    ['#spm-likes', '#spm-comments', '#spm-shares', '#spm-reach'].forEach(s => _setText(s, '—'));
+    const bar = _q('#spm-engage-bar');
+    if (bar) bar.style.width = '0%';
+    const arc = _q('#spm-viral-arc');
+    if (arc) arc.style.strokeDashoffset = '213.6';
+  }
+
+  // ── Floating button ───────────────────────────────────────────
+  function _buildToggleButton() {
+    const existing = document.getElementById('spm-toggle-btn');
+    if (existing) existing.remove();
+    const btn = document.createElement('button');
+    btn.id = 'spm-toggle-btn';
+    btn.textContent = '📊';
+    btn.title = 'Social Post Monitor';
+    btn.addEventListener('click', _toggleSidebar);
+    document.body.appendChild(btn);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────
+  function _q(sel) { return _sidebar?.querySelector(sel) || document.querySelector(sel); }
+  function _setText(sel, val) { const el = _q(sel); if (el) el.textContent = val ?? '—'; }
+  function _setStatus(msg) { _setText('#spm-status', msg); }
+
+  // ── Init ─────────────────────────────────────────────────────
+  function init() {
+    if (_initialized) {
+      // FIX v10: destroy cleans up old listeners before re-init
+      SpmMonitor.destroy?.();
+    }
+    _initialized = true;
+
+    _buildSidebar();
+    _buildToggleButton();
+    _attachMonitorListeners();
+    _attachSystemThemeListener(); // FIX v10: new
+    SpmMonitor.init();
+
+    spmLog('UI initialized');
+  }
+
+  // Auto-start
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();

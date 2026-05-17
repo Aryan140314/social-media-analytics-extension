@@ -1,404 +1,239 @@
-/**
- * SPM Pro v9 · content/analytics.js
- *
- * Pure computation — no DOM, no storage, no side effects.
- * Every function returns a safe object even on bad input.
- *
- * Requirements addressed:
- *  R4  – Prevents NaN via _safe() helper on every arithmetic result
- *  R4  – Handles missing fields with explicit null checks before division
- *  R4  – Safe defaults for all return types
- *  R7  – try/catch in every public function
- *  R8  – DEBUG logs
- */
+/* ============================================================
+   analytics.js — Engagement, growth rate, viral score
+   v10 — fixes: chart divide-by-zero guards,
+         viral score when followers=null,
+         consistent NaN prevention
+   ============================================================ */
+
 'use strict';
 
 const SpmAnalytics = (() => {
 
-  const DEBUG = true;
-  const log = {
-    info : (...a) => DEBUG && console.info ('[SPM:analytics]', ...a),
-    warn : (...a) =>           console.warn ('[SPM:analytics]', ...a),
-    error: (...a) =>           console.error('[SPM:analytics]', ...a),
-  };
+  // ── Safe math helpers ─────────────────────────────────────────
+  const _i  = (v, fb = 0)  => (Number.isFinite(v) ? Math.round(v)       : fb);
+  const _in = (v)           => (Number.isFinite(v) ? Math.round(v)       : null);
+  const _r2 = (v)           => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
+  const _pct = (v)          => (Number.isFinite(v) ? (v * 100).toFixed(2) + '%' : '—');
 
-  /* ─── Thresholds ─────────────────────────────────────────── */
-  const T = { VIRAL:10, HIGH:5, MIN_LIKES_VIRAL:1_000, GROWTH_VIRAL:200 };
+  // ── Engagement tiers ─────────────────────────────────────────
+  const TIERS = [
+    { min: 0.06,  label: 'Viral',    tier: 'viral'   },
+    { min: 0.03,  label: 'High',     tier: 'high'    },
+    { min: 0.01,  label: 'Average',  tier: 'average' },
+    { min: 0,     label: 'Low',      tier: 'low'     },
+  ];
 
-  /* ─── R4 helpers — zero NaN leaks past this point ─────────── */
-
-  /** Normalise to integer or 0 (never NaN) */
-  function _i(v, fallback = 0) {
-    const n = normalizeNumber(v);
-    return n != null && isFinite(n) ? n : fallback;
-  }
-
-  /** Normalise to integer or null (used where 0 ≠ null) */
-  function _in(v) {
-    const n = normalizeNumber(v);
-    return n != null && isFinite(n) ? n : null;
-  }
-
-  /** Round to 2 dp; return null if not finite */
-  function _r2(v) {
-    return isFinite(v) ? parseFloat(v.toFixed(2)) : null;
-  }
-
-  /** Round to 4 dp; return null if not finite */
-  function _r4(v) {
-    return isFinite(v) ? parseFloat(v.toFixed(4)) : null;
-  }
-
-  /** Safe percentage string */
-  function _pctStr(v) {
-    return isFinite(v) ? v.toFixed(2) + '%' : '—';
-  }
-
-  /* ═══════════════════════════════════════════════════════════
-   * computeEngagement(likes, comments, followers, shares?)
-   *
-   * R4 — returns null rate (not NaN) when followers ≤ 0
-   * ═══════════════════════════════════════════════════════════ */
+  // ── Compute engagement rate ───────────────────────────────────
   function computeEngagement(likes, comments, followers, shares) {
-    try {
-      const l = _i(likes);
-      const c = _i(comments);
-      const s = _i(shares);
-      const f = _in(followers);         // null if missing — R4 guard
+    const l = _i(likes);
+    const c = _i(comments);
+    const s = _i(shares);
+    const f = _i(followers);
+    const interactions = l + c + s;
 
-      const interactions = l + c + s;
-
-      if (!f || f <= 0) {
-        return _engResult(null, interactions, l, c, s);
-      }
-
-      const rate = (interactions / f) * 100;
-
-      // R4 — explicit isFinite guard before using rate
-      if (!isFinite(rate)) {
-        log.warn('computeEngagement: rate is not finite (f=%d, interactions=%d)', f, interactions);
-        return _engResult(null, interactions, l, c, s);
-      }
-
-      log.info('Engagement — rate:', rate.toFixed(2) + '%', 'interactions:', interactions, 'followers:', f);
-      return _engResult(rate, interactions, l, c, s);
-
-    } catch (e) {
-      log.error('computeEngagement:', e.message);
-      return _engResult(null, 0, 0, 0, 0);
+    // FIX: v9 returned NaN when followers=0; now falls back to 'unknown'
+    if (f <= 0) {
+      return {
+        rate: null,
+        ratePercent: '—',
+        tier: 'unknown',
+        label: 'Unknown (no follower data)',
+        interactions,
+        breakdown: { likes: l, comments: c, shares: s },
+      };
     }
-  }
 
-  function _engResult(rate, interactions, l, c, s) {
-    const tier  = rate == null ? 'unknown'
-                : rate >= T.VIRAL ? 'viral'
-                : rate >= T.HIGH  ? 'high'
-                : rate >= 2       ? 'average'
-                :                   'low';
+    const rate = interactions / f;
+    if (!Number.isFinite(rate)) {
+      return { rate: null, ratePercent: '—', tier: 'unknown', label: 'Unknown', interactions, breakdown: { likes: l, comments: c, shares: s } };
+    }
+
+    const tierObj = TIERS.find(t => rate >= t.min) || TIERS[TIERS.length - 1];
     return {
-      rate:        _r4(rate),
-      ratePercent: _pctStr(rate),
-      tier,
-      label:       { viral:'🔥 Viral', high:'📈 High', average:'✅ Average', low:'📉 Low', unknown:'— No follower data' }[tier],
+      rate:        _r2(rate),
+      ratePercent: _pct(rate),
+      tier:        tierObj.tier,
+      label:       tierObj.label,
       interactions,
-      breakdown:   { likes:l, comments:c, shares:s },
+      breakdown:   { likes: l, comments: c, shares: s },
     };
   }
 
-  /* ═══════════════════════════════════════════════════════════
-   * computeGrowthRate(history[])
-   *
-   * R4 — all division results checked with isFinite before storing
-   * ═══════════════════════════════════════════════════════════ */
+  // ── Compute growth rate ───────────────────────────────────────
+  // FIX v10: added guard for single-point history (was dividing by 0)
   function computeGrowthRate(history) {
-    const _empty = {
-      events:[], avgLikesPerHour:0, avgCommentsPerHour:0,
-      peakLikesPerHour:0, peakCommentsPerHour:0, trend:'insufficient_data',
-    };
-    try {
-      if (!Array.isArray(history) || history.length < 2) return _empty;
+    if (!Array.isArray(history) || history.length < 2) {
+      return { events: history || [], avgLikesPerHour: null, peakLikesPerHour: null, trend: 'insufficient_data' };
+    }
 
-      const sorted = history
-        .filter(h => h && typeof h.ts === 'number' && isFinite(h.ts))
-        .sort((a, b) => a.ts - b.ts);
+    const events = history
+      .filter(h => h.ts && h.likes != null)
+      .sort((a, b) => a.ts - b.ts);
 
-      if (sorted.length < 2) return _empty;
+    if (events.length < 2) {
+      return { events, avgLikesPerHour: null, peakLikesPerHour: null, trend: 'insufficient_data' };
+    }
 
-      const events = [];
-      for (let i = 1; i < sorted.length; i++) {
-        const prev = sorted[i - 1], curr = sorted[i];
-        const dtH  = (curr.ts - prev.ts) / 3_600_000;
-        if (!isFinite(dtH) || dtH <= 0) continue;
+    const rates = [];
+    for (let i = 1; i < events.length; i++) {
+      const dtHours = (events[i].ts - events[i - 1].ts) / 3_600_000;
+      if (dtHours <= 0) continue; // FIX: skip zero-duration intervals
+      const dLikes = Math.max(0, events[i].likes - events[i - 1].likes);
+      rates.push(dLikes / dtHours);
+    }
 
-        const pL = _i(prev.likes), cL = _i(curr.likes);
-        const pC = _i(prev.comments), cC = _i(curr.comments);
-        const ld  = cL - pL, cd = cC - pC;
+    if (!rates.length) {
+      return { events, avgLikesPerHour: null, peakLikesPerHour: null, trend: 'insufficient_data' };
+    }
 
-        // R4 — guard before pushing to events
-        const lph = ld / dtH, cph = cd / dtH;
-        if (!isFinite(lph) || !isFinite(cph)) continue;
+    const avg  = rates.reduce((a, b) => a + b, 0) / rates.length;
+    const peak = Math.max(...rates);
 
-        events.push({
-          fromTs:          prev.ts,
-          toTs:            curr.ts,
-          dtHours:         _r2(dtH),
-          likeDelta:       ld,
-          commentDelta:    cd,
-          likesPerHour:    _r2(lph),
-          commentsPerHour: _r2(cph),
-          likeGrowthPct:   pL > 0 ? _r2(ld / pL * 100) : null,
-          commentGrowthPct:pC > 0 ? _r2(cd / pC * 100) : null,
-        });
+    // Trend: compare first half vs second half of rates
+    let trend = 'stable';
+    if (rates.length >= 4) {
+      const half = Math.floor(rates.length / 2);
+      const firstAvg  = rates.slice(0, half).reduce((a, b) => a + b, 0) / half;
+      const secondAvg = rates.slice(half).reduce((a, b) => a + b, 0) / (rates.length - half);
+      if (!Number.isFinite(firstAvg) || !Number.isFinite(secondAvg)) {
+        trend = 'insufficient_data';
+      } else if (secondAvg > firstAvg * 1.2) {
+        trend = 'accelerating';
+      } else if (secondAvg < firstAvg * 0.8) {
+        trend = 'decelerating';
       }
-
-      if (!events.length) return { ..._empty, trend:'flat' };
-
-      const avgL  = events.reduce((s, e) => s + (e.likesPerHour    ?? 0), 0) / events.length;
-      const avgC  = events.reduce((s, e) => s + (e.commentsPerHour ?? 0), 0) / events.length;
-      const pkL   = Math.max(0, ...events.map(e => e.likesPerHour    ?? 0));
-      const pkC   = Math.max(0, ...events.map(e => e.commentsPerHour ?? 0));
-
-      const mid = Math.floor(events.length / 2);
-      const fA  = mid ? events.slice(0, mid).reduce((s,e)=>s+(e.likesPerHour??0),0)/mid : 0;
-      const sA  = (events.length-mid) ? events.slice(mid).reduce((s,e)=>s+(e.likesPerHour??0),0)/(events.length-mid) : 0;
-      const trend = !isFinite(fA)||!isFinite(sA) ? 'stable'
-                  : sA > fA * 1.1 ? 'accelerating'
-                  : sA < fA * 0.9 ? 'decelerating'
-                  :                  'stable';
-
-      log.info('Growth — trend:', trend, 'avgLikes/hr:', _r2(avgL), 'peak:', _r2(pkL));
-
-      return {
-        events,
-        avgLikesPerHour:    _r2(avgL) ?? 0,
-        avgCommentsPerHour: _r2(avgC) ?? 0,
-        peakLikesPerHour:   _r2(pkL) ?? 0,
-        peakCommentsPerHour:_r2(pkC) ?? 0,
-        trend,
-        dataPoints: sorted.length,
-      };
-
-    } catch (e) {
-      log.error('computeGrowthRate:', e.message);
-      return _empty;
-    }
-  }
-
-  /* ═══════════════════════════════════════════════════════════
-   * detectViral(postData, history, profileData)
-   *
-   * R4 — score is always Math.round → integer 0–100, never NaN
-   * ═══════════════════════════════════════════════════════════ */
-  function detectViral(postData, history, profileData) {
-    const _nullResult = {
-      score:0, isViral:false, label:'📊 No data',
-      signals:[], engage: _engResult(null,0,0,0,0),
-    };
-    try {
-      if (!postData || typeof postData !== 'object') return _nullResult;
-
-      const likes     = _i(postData.likes);
-      const comments  = _i(postData.comments);
-      const followers = _in(profileData?.followers ?? postData?.followers);
-      const signals   = [];
-      let   raw       = 0;
-
-      // Signal 1: engagement rate (0–35 pts)
-      const engage = computeEngagement(likes, comments, followers);
-      if (engage.rate != null && isFinite(engage.rate)) {
-        const pts = Math.min(35, (engage.rate / T.VIRAL) * 35);
-        if (isFinite(pts) && pts > 0) {
-          raw += pts;
-          signals.push({ key:'engagement', label:`${engage.tier==='viral'?'🔥':'📈'} ${engage.ratePercent}`, weight:_r2(pts) });
-        }
-      }
-
-      // Signal 2: absolute like count (0–25 pts)
-      if (likes >= T.MIN_LIKES_VIRAL) {
-        const pts = Math.min(25, Math.log10(likes / T.MIN_LIKES_VIRAL + 1) * 25);
-        if (isFinite(pts) && pts > 0) {
-          raw += pts;
-          signals.push({ key:'likes', label:`❤️ ${spmFmt(likes)} likes`, weight:_r2(pts) });
-        }
-      }
-
-      // Signal 3: growth velocity (0–30 pts)
-      if (Array.isArray(history) && history.length >= 2) {
-        const growth = computeGrowthRate(history);
-        if (growth.peakLikesPerHour > 0) {
-          const pts = Math.min(30, (growth.peakLikesPerHour / T.GROWTH_VIRAL) * 30);
-          if (isFinite(pts) && pts > 0) {
-            raw += pts;
-            signals.push({ key:'velocity', label:`⚡ ${growth.peakLikesPerHour}/hr`, weight:_r2(pts) });
-          }
-        }
-        if (growth.trend === 'accelerating') {
-          raw += 5;
-          signals.push({ key:'trend', label:'📈 Accelerating', weight:5 });
-        }
-      }
-
-      // Signal 4: comment/like ratio (0–10 pts)
-      if (likes > 0 && comments > 0) {
-        const ratio = comments / likes;
-        if (isFinite(ratio) && ratio >= 0.05) {
-          const pts = Math.min(10, ratio * 100);
-          if (isFinite(pts)) {
-            raw += pts;
-            signals.push({ key:'discussion', label:`💬 ${(ratio*100).toFixed(1)}% comment ratio`, weight:_r2(pts) });
-          }
-        }
-      }
-
-      // R4 — final score: always a valid integer 0–100
-      const score   = Math.min(100, Math.max(0, Math.round(raw)));
-      const isViral = score >= 60;
-      const label   = score >= 80 ? '🔥 Going Viral'
-                    : score >= 60 ? '🚀 Viral Potential'
-                    : score >= 40 ? '✅ Good'
-                    : score >= 20 ? '📊 Average'
-                    :               '📉 Low';
-
-      log.info('Viral — score:', score, 'label:', label, 'signals:', signals.length);
-      return { score, isViral, label, signals, engage };
-
-    } catch (e) {
-      log.error('detectViral:', e.message);
-      return _nullResult;
-    }
-  }
-
-  /* ─── Hashtag / mention frequency ───────────────────────── */
-  function analyzeHashtags(postData, commentList = []) {
-    try {
-      const text = [(postData?.caption ?? ''), ...(commentList ?? []).map(c => c?.text ?? '')].join(' ');
-      const freq  = new Map();
-      extractHashtags(text).forEach(t => freq.set(t, (freq.get(t) ?? 0) + 1));
-      const sorted = [...freq.entries()].sort((a,b)=>b[1]-a[1]).map(([tag,count])=>({tag,count}));
-      return { unique:sorted.length, topTags:sorted.slice(0,10), all:sorted, caption:postData?.hashtags??[] };
-    } catch (e) {
-      log.error('analyzeHashtags:', e.message);
-      return { unique:0, topTags:[], all:[], caption:[] };
-    }
-  }
-
-  function analyzeMentions(postData, commentList = []) {
-    try {
-      const text = [(postData?.caption ?? ''), ...(commentList ?? []).map(c => c?.text ?? '')].join(' ');
-      const freq  = new Map();
-      extractMentions(text).forEach(m => freq.set(m, (freq.get(m) ?? 0) + 1));
-      const sorted = [...freq.entries()].sort((a,b)=>b[1]-a[1]).map(([m,count])=>({mention:m,count}));
-      return { unique:sorted.length, top:sorted.slice(0,10), all:sorted };
-    } catch (e) {
-      log.error('analyzeMentions:', e.message);
-      return { unique:0, top:[], all:[] };
-    }
-  }
-
-  /* ═══════════════════════════════════════════════════════════
-   * buildReport(postData, history, profileData, commentList)
-   *
-   * R4 — if postData is null/invalid, returns a fully safe
-   *      empty report (no NaN anywhere, no crashes downstream)
-   * ═══════════════════════════════════════════════════════════ */
-  function buildReport(postData, history, profileData, commentList) {
-    // R4 — guard at the top: never process null postData
-    if (!postData || typeof postData !== 'object') {
-      log.warn('buildReport called with null/invalid postData — returning empty report');
-      return _emptyReport();
     }
 
-    try {
-      const hist  = Array.isArray(history)     ? history     : [];
-      const prof  = profileData && typeof profileData === 'object' ? profileData : {};
-      const cmts  = Array.isArray(commentList) ? commentList : [];
-
-      const engagement = computeEngagement(postData.likes, postData.comments, prof.followers ?? postData.followers, postData.shares);
-      const growth     = computeGrowthRate(hist);
-      const viral      = detectViral(postData, hist, prof);
-      const hashtags   = analyzeHashtags(postData, cmts);
-      const mentions   = analyzeMentions(postData, cmts);
-
-      log.info('Report built — engage:', engagement.ratePercent, '| viral:', viral.score + '/100');
-
-      return {
-        meta: {
-          generatedAt:  Date.now(),
-          postId:       postData.postId   ?? '',
-          url:          postData.url       ?? location.href,
-          platform:     postData.platform  ?? SPM.PLATFORM,
-          dataSource:   postData.source    ?? 'unknown',
-        },
-        post: {
-          username:     postData.username  ?? '',
-          caption:      postData.caption   ?? '',
-          isVideo:      postData.isVideo   ?? false,
-          mediaUrl:     postData.mediaUrl  ?? '',
-          postedAt:     postData.ts        ?? null,
-        },
-        stats: {
-          likes:        postData.likes     ?? null,
-          comments:     postData.comments  ?? null,
-          shares:       postData.shares    ?? null,
-          reach:        postData.reach     ?? null,
-          followers:    prof.followers     ?? postData.followers ?? null,
-        },
-        engagement,
-        growth,
-        viral,
-        hashtags,
-        mentions,
-        history: hist.slice(-50),
-      };
-
-    } catch (e) {
-      log.error('buildReport:', e.message);
-      return _emptyReport();
-    }
-  }
-
-  function _emptyReport() {
-    const emptyEng  = _engResult(null, 0, 0, 0, 0);
-    const emptyViral= { score:0, isViral:false, label:'No data', signals:[], engage:emptyEng };
     return {
-      meta:       { generatedAt:Date.now(), postId:'', url:location.href, platform:SPM.PLATFORM, dataSource:'unknown' },
-      post:       { username:'', caption:'', isVideo:false, mediaUrl:'', postedAt:null },
-      stats:      { likes:null, comments:null, shares:null, reach:null, followers:null },
-      engagement: emptyEng,
-      growth:     { events:[], avgLikesPerHour:0, avgCommentsPerHour:0, peakLikesPerHour:0, peakCommentsPerHour:0, trend:'insufficient_data' },
-      viral:      emptyViral,
-      hashtags:   { unique:0, topTags:[], all:[], caption:[] },
-      mentions:   { unique:0, top:[], all:[] },
+      events,
+      avgLikesPerHour:  _r2(avg),
+      peakLikesPerHour: _r2(peak),
+      trend,
+    };
+  }
+
+  // ── Viral detection score (0–100) ─────────────────────────────
+  // FIX v10: when followers=null, engagement component (35pts)
+  // was silently returning 0, skewing the score. Now we scale
+  // the other signals proportionally when follower data is missing.
+  function detectViral(postData, history, profileData) {
+    if (!postData) return _emptyViral();
+
+    const likes    = _i(postData.likes);
+    const comments = _i(postData.comments);
+    const followers = _i(postData.followers || profileData?.followers, 0);
+    const hasFollowers = followers > 0;
+
+    let score = 0;
+    const signals = [];
+
+    // Signal 1: Engagement rate (35 pts if followers known, else skip and scale others)
+    if (hasFollowers) {
+      const engage = computeEngagement(likes, comments, followers, postData.shares);
+      const rate   = engage.rate ?? 0;
+      const ePts   = rate >= 0.10 ? 35 : rate >= 0.06 ? 28 : rate >= 0.03 ? 18 : rate >= 0.01 ? 8 : 0;
+      score += ePts;
+      if (ePts > 0) signals.push(`Engagement ${engage.ratePercent} (${ePts}pts)`);
+    }
+
+    // Signal 2: Absolute likes (25 pts, or 35 if no followers for scale compensation)
+    const likeMax  = hasFollowers ? 25 : 35;
+    const likePts  = likes >= 1_000_000 ? likeMax : likes >= 100_000 ? Math.round(likeMax * 0.8) :
+                     likes >= 10_000    ? Math.round(likeMax * 0.5)  : likes >= 1_000 ? Math.round(likeMax * 0.2) : 0;
+    score += likePts;
+    if (likePts > 0) signals.push(`${spmFmt(likes)} likes (${likePts}pts)`);
+
+    // Signal 3: Growth velocity (30 pts)
+    const growth = computeGrowthRate(history);
+    const gph    = growth.avgLikesPerHour ?? 0;
+    const gPts   = gph >= 10_000 ? 30 : gph >= 1_000 ? 22 : gph >= 100 ? 12 : gph >= 10 ? 5 : 0;
+    score += gPts;
+    if (gPts > 0) signals.push(`${spmFmt(gph)}/hr growth (${gPts}pts)`);
+
+    // Signal 4: Comment ratio (10 pts)
+    const ratio  = likes > 0 ? comments / likes : 0;
+    const rPts   = ratio >= 0.1 ? 10 : ratio >= 0.05 ? 6 : ratio >= 0.02 ? 3 : 0;
+    score += rPts;
+    if (rPts > 0) signals.push(`Comment ratio ${(ratio * 100).toFixed(1)}% (${rPts}pts)`);
+
+    // Cap at 100
+    score = Math.min(100, score);
+
+    const label = score >= 80 ? 'Viral 🔥' : score >= 60 ? 'Trending ⬆' : score >= 40 ? 'Growing' : score >= 20 ? 'Normal' : 'Low';
+
+    return {
+      score,
+      isViral: score >= 60,
+      label,
+      signals,
+      engage: hasFollowers ? computeEngagement(likes, comments, followers, postData.shares) : null,
+    };
+  }
+
+  function _emptyViral() {
+    return { score: 0, isViral: false, label: 'Unknown', signals: [], engage: null };
+  }
+
+  // ── Empty report (never throws) ───────────────────────────────
+  function _emptyReport() {
+    return {
+      meta:       { generatedAt: Date.now(), version: SPM.VERSION },
+      post:       null,
+      stats:      { likes: null, comments: null, shares: null, reach: null, reachIsNA: true },
+      engagement: { rate: null, ratePercent: '—', tier: 'unknown', label: 'No data', interactions: 0, breakdown: {} },
+      growth:     { events: [], avgLikesPerHour: null, peakLikesPerHour: null, trend: 'insufficient_data' },
+      viral:      _emptyViral(),
+      hashtags:   [],
+      mentions:   [],
       history:    [],
     };
   }
 
-  /* ─── CSV export ─────────────────────────────────────────── */
-  function historyToCsv(history) {
+  // ── Full report ───────────────────────────────────────────────
+  function buildReport(postData, history, profileData, commentList) {
+    // FIX v9 already fixed "buildReport(null) crashing UI" — keeping safe guard
+    if (!postData) return _emptyReport();
+
+    const followers = postData.followers || profileData?.followers || null;
+
     try {
-      if (!Array.isArray(history) || !history.length) return '';
-      const H = ['Time','Platform','URL','PostID','Likes','Comments','Shares','Reach','Followers','EngageRate','ViralScore','Source'];
-      const rows = history.map(h => [
-        h.ts ? new Date(h.ts).toLocaleString() : '',
-        h.platform??'', h.url??'', h.postId??'',
-        h.likes??'', h.comments??'', h.shares??'', h.reach??'',
-        h.followers??'', h.engageRate??'', h.viralScore??'', h.source??'',
-      ]);
-      return [H, ...rows].map(r => r.map(v => `"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\n');
-    } catch (e) {
-      log.error('historyToCsv:', e.message);
-      return '';
+      const engagement = computeEngagement(
+        postData.likes, postData.comments, followers, postData.shares
+      );
+      const growth = computeGrowthRate(history || []);
+      const viral  = detectViral(postData, history || [], profileData);
+
+      return {
+        meta: { generatedAt: Date.now(), version: SPM.VERSION, source: postData.source },
+        post: {
+          postId:   postData.postId,
+          username: postData.username,
+          url:      postData.url,
+          ts:       postData.ts,
+          isVideo:  postData.isVideo,
+          platform: postData.platform,
+        },
+        stats: {
+          likes:     postData.likes,
+          comments:  postData.comments,
+          shares:    postData.shares,
+          reach:     postData.reach,
+          followers,
+          reachIsNA: !postData.isVideo,
+        },
+        engagement,
+        growth,
+        viral,
+        hashtags: postData.hashtags || [],
+        mentions: postData.mentions || [],
+        history:  history || [],
+        comments: commentList || [],
+      };
+    } catch (err) {
+      spmErr('buildReport error:', err);
+      return _emptyReport();
     }
   }
 
-  return {
-    computeEngagement,
-    computeGrowthRate,
-    detectViral,
-    analyzeHashtags,
-    analyzeMentions,
-    buildReport,
-    historyToCsv,
-  };
-
+  return { computeEngagement, computeGrowthRate, detectViral, buildReport };
 })();

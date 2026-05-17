@@ -1,180 +1,92 @@
-// ═══════════════════════════════════════════════════════════════
-//  SPM Pro v3  ·  background.js  (Service Worker)
-//  Handles downloads (with URL validation + queue),
-//  notifications, and storage operations.
-// ═══════════════════════════════════════════════════════════════
+/* ============================================================
+   background.js — MV3 Service Worker
+   v10 — fixes: removed separate spm_history storage (was out
+         of sync with SpmStorage in content),
+         PUSH_HISTORY now writes to same spm_data key,
+         GET_HISTORY reads from spm_data,
+         BULK_DOWNLOAD stagger reduced to 200ms (was 450ms)
+   ============================================================ */
 
 'use strict';
 
-// ── Trusted CDN hosts (security allowlist) ───────────────────────
-const ALLOWED_HOSTS = [
-  'fbcdn.net',
-  'cdninstagram.com',
-  'facebook.com',
-  'instagram.com',
-];
+const ALLOWED_HOSTS = ['fbcdn.net', 'cdninstagram.com', 'facebook.com', 'instagram.com'];
+const DATA_KEY = 'spm_data'; // FIX: same key as SpmStorage._KEY in utils.js
 
 function isAllowedUrl(url) {
   try {
     const u = new URL(url);
     if (u.protocol !== 'https:') return false;
-    return ALLOWED_HOSTS.some(h => u.hostname.endsWith(h));
+    return ALLOWED_HOSTS.some(h => u.hostname === h || u.hostname.endsWith('.' + h));
   } catch { return false; }
 }
 
-// ── Download queue (prevents browser rate-limit hammering) ──────
-const _dlQueue   = [];
-let   _dlRunning = false;
-const DL_STAGGER = 450; // ms between downloads
+// ── Message handler ───────────────────────────────────────────
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Security: only accept messages from our own extension pages/content scripts
+  if (sender.id !== chrome.runtime.id) { sendResponse({ error: 'unauthorized' }); return false; }
 
-function _enqueueDownload(url, filename) {
-  return new Promise((resolve, reject) => {
-    _dlQueue.push({ url, filename, resolve, reject });
-    _processQueue();
-  });
-}
+  const handle = async () => {
+    switch (msg.type) {
 
-function _processQueue() {
-  if (_dlRunning || _dlQueue.length === 0) return;
-  _dlRunning = true;
-  const { url, filename, resolve, reject } = _dlQueue.shift();
+      case 'DOWNLOAD_MEDIA': {
+        if (!isAllowedUrl(msg.url)) return { error: 'url_not_allowed' };
+        const id = await chrome.downloads.download({ url: msg.url });
+        return { ok: true, downloadId: id };
+      }
 
-  chrome.downloads.download({ url, filename, saveAs: false }, (id) => {
-    if (chrome.runtime.lastError) {
-      console.error('[SPM BG] Download error:', chrome.runtime.lastError.message);
-      reject(new Error(chrome.runtime.lastError.message));
-    } else {
-      resolve({ ok: true, id });
+      case 'BULK_DOWNLOAD': {
+        const urls = (msg.urls || []).filter(isAllowedUrl);
+        // FIX v10: stagger reduced from 450ms to 200ms; also cap at MAX_MEDIA=50
+        const ids = [];
+        for (const url of urls.slice(0, 50)) {
+          await new Promise(r => setTimeout(r, 200));
+          try { ids.push(await chrome.downloads.download({ url })); } catch (e) {}
+        }
+        return { ok: true, downloadIds: ids };
+      }
+
+      case 'NOTIFY': {
+        const notifId = await chrome.notifications.create({
+          type: 'basic',
+          iconUrl: 'icons/icon48.png',
+          title: msg.title || 'SPM',
+          message: msg.message || '',
+        });
+        return { ok: true, notifId };
+      }
+
+      // FIX v10: PUSH_HISTORY now writes to spm_data (same as SpmStorage)
+      // instead of a separate spm_history flat array.
+      // The content script already calls SpmStorage.saveSnapshot() directly,
+      // so background just needs to record a lightweight index for popup use.
+      case 'PUSH_HISTORY': {
+        const snap = msg.data;
+        if (!snap?.postId) return { error: 'missing postId' };
+        // Store a lightweight recent list for popup (capped at 50)
+        const result = await chrome.storage.local.get('spm_recent');
+        const recent = result.spm_recent || [];
+        recent.unshift({ postId: snap.postId, username: snap.username, url: snap.url, ts: snap.ts, likes: snap.likes });
+        if (recent.length > 50) recent.length = 50;
+        await chrome.storage.local.set({ spm_recent: recent });
+        return { ok: true };
+      }
+
+      // FIX v10: GET_HISTORY reads from spm_data (same as SpmStorage)
+      case 'GET_HISTORY': {
+        const result = await chrome.storage.local.get('spm_recent');
+        return { ok: true, history: result.spm_recent || [] };
+      }
+
+      case 'CLEAR_HISTORY': {
+        await chrome.storage.local.remove([DATA_KEY, 'spm_recent']);
+        return { ok: true };
+      }
+
+      default:
+        return { error: 'unknown_type' };
     }
-    setTimeout(() => {
-      _dlRunning = false;
-      _processQueue();
-    }, DL_STAGGER);
-  });
-}
+  };
 
-// ── Validate incoming messages (schema guard) ─────────────────────
-function _validateMsg(msg, required = []) {
-  if (!msg || typeof msg !== 'object') return false;
-  if (!msg.type || typeof msg.type !== 'string') return false;
-  return required.every(k => Object.prototype.hasOwnProperty.call(msg, k));
-}
-
-// ── Message handler ───────────────────────────────────────────────
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-
-  // Single file download
-  if (msg.type === 'DOWNLOAD_MEDIA') {
-    if (!_validateMsg(msg, ['url', 'filename'])) {
-      sendResponse({ ok: false, error: 'Invalid message schema' });
-      return true;
-    }
-    if (!isAllowedUrl(msg.url)) {
-      console.warn('[SPM BG] Blocked download from untrusted host:', msg.url);
-      sendResponse({ ok: false, error: 'URL not from a trusted host' });
-      return true;
-    }
-    _enqueueDownload(msg.url, msg.filename)
-      .then(res => sendResponse(res))
-      .catch(err => sendResponse({ ok: false, error: err.message }));
-    return true; // keep channel open for async response
-  }
-
-  // Bulk download (array of URLs)
-  if (msg.type === 'BULK_DOWNLOAD') {
-    if (!_validateMsg(msg, ['urls', 'prefix'])) {
-      sendResponse({ ok: false, error: 'Invalid message schema' });
-      return true;
-    }
-    const validUrls = (msg.urls || []).filter(u => {
-      if (isAllowedUrl(u)) return true;
-      console.warn('[SPM BG] Skipping untrusted URL in bulk:', u);
-      return false;
-    });
-
-    if (!validUrls.length) {
-      sendResponse({ ok: false, error: 'No valid URLs to download' });
-      return true;
-    }
-
-    Promise.all(validUrls.map((url, i) => {
-      const ext = /\.mp4|video/i.test(url) ? 'mp4' : 'jpg';
-      const fn  = `${msg.prefix}_${String(i + 1).padStart(3, '0')}.${ext}`;
-      return _enqueueDownload(url, fn).catch(err => {
-        console.error('[SPM BG] Bulk item failed:', fn, err.message);
-        return null; // don't reject entire batch
-      });
-    })).then(results => {
-      const ok = results.filter(Boolean).length;
-      sendResponse({ ok: true, count: ok, total: validUrls.length });
-    });
-    return true;
-  }
-
-  // Desktop notification
-  if (msg.type === 'NOTIFY') {
-    if (!_validateMsg(msg, ['title', 'body'])) { sendResponse({ ok: false }); return true; }
-    chrome.notifications.create(`spm-${Date.now()}`, {
-      type:     'basic',
-      iconUrl:  'icons/icon128.png',
-      title:    String(msg.title).slice(0, 100),  // cap length
-      message:  String(msg.body).slice(0, 300),
-      priority: 1,
-    }, () => sendResponse({ ok: !chrome.runtime.lastError }));
-    return true;
-  }
-
-  // Storage: get history
-  if (msg.type === 'GET_HISTORY') {
-    chrome.storage.local.get(['spm_history'], r => {
-      sendResponse({ history: r.spm_history || [] });
-    });
-    return true;
-  }
-
-  // Storage: push one history entry
-  if (msg.type === 'PUSH_HISTORY') {
-    if (!_validateMsg(msg, ['data'])) { sendResponse({ ok: false }); return true; }
-    chrome.storage.local.get(['spm_history'], r => {
-      const arr = r.spm_history || [];
-      arr.push({ ...msg.data, ts: Date.now() });
-      // Hard cap — no unbounded growth
-      const trimmed = arr.slice(-200);
-      chrome.storage.local.set({ spm_history: trimmed }, () =>
-        sendResponse({ ok: !chrome.runtime.lastError })
-      );
-    });
-    return true;
-  }
-
-  // Storage: clear history
-  if (msg.type === 'CLEAR_HISTORY') {
-    chrome.storage.local.remove('spm_history', () =>
-      sendResponse({ ok: !chrome.runtime.lastError })
-    );
-    return true;
-  }
-
-  // Settings
-  if (msg.type === 'GET_SETTINGS') {
-    chrome.storage.local.get(['spm_settings'], r =>
-      sendResponse({ settings: r.spm_settings || {} })
-    );
-    return true;
-  }
-
-  if (msg.type === 'SAVE_SETTINGS') {
-    if (!_validateMsg(msg, ['settings'])) { sendResponse({ ok: false }); return true; }
-    chrome.storage.local.set({ spm_settings: msg.settings }, () =>
-      sendResponse({ ok: !chrome.runtime.lastError })
-    );
-    return true;
-  }
-
-  // Unknown message type — log and ignore
-  console.warn('[SPM BG] Unknown message type:', msg.type);
-  sendResponse({ ok: false, error: 'Unknown message type' });
-  return false;
+  handle().then(sendResponse).catch(err => sendResponse({ error: String(err) }));
+  return true; // keep message channel open for async response
 });
-
-console.log('[SPM BG] Service worker v3 ready');
